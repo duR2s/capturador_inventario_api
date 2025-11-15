@@ -10,9 +10,14 @@ from django.contrib.auth.models import User
 
 from rest_framework.authentication import TokenAuthentication
 
+
+# MODEL tokens
+
 class BearerTokenAuthentication(TokenAuthentication):
     keyword = "Bearer"
 
+
+# Models for Administradores, Capturadores
 class Administradores(models.Model):
     id = models.BigAutoField(primary_key=True)
     user = models.OneToOneField(User, on_delete=models.CASCADE)
@@ -38,6 +43,8 @@ class Capturadores(models.Model):
     def __str__(self):
         return f"Perfil del capturador {self.user.first_name} {self.user.last_name}"
 
+
+#Models for Captura, DetalleCaptura
 class Captura(models.Model):
     id = models.BigAutoField(primary_key=True)
     folio = models.CharField(max_length=50, unique=True, null=False, blank=False)
@@ -58,3 +65,7 @@ class DetalleCaptura(models.Model):
 
     def __str__(self):
         return f"{self.cantidad_contada} de {self.producto_codigo} en folio {self.captura.folio}"
+
+
+# Model for Productos
+class Productos(models.Model):

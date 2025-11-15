@@ -18,7 +18,8 @@ class Administradores(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     clave_admin = models.CharField(max_length=255,null=True, blank=True)
     telefono = models.CharField(max_length=255, null=True, blank=True)
-    rfc = models.CharField(max_length=255,null=True, blank=True)
+    fecha_nacimiento = models.DateField(auto_now_add=False, null=True, blank=True)
+    edad = models.IntegerField(null=True, blank=True)
     creation = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     update = models.DateTimeField(null=True, blank=True)
 
@@ -30,6 +31,7 @@ class Capturadores(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     id_trabajador = models.CharField(max_length=255,null=True, blank=True)
     telefono = models.CharField(max_length=255, null=True, blank=True)
+    edad = models.IntegerField(null=True, blank=True)
     creation = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     update = models.DateTimeField(null=True, blank=True)
 

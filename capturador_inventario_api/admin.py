@@ -5,7 +5,7 @@ from capturador_inventario_api.models import Administradores, Capturadores, Capt
 
 @admin.register(Administradores)
 class AdministradoresAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "clave_admin", "telefono", "rfc", "creation")
+    list_display = ("id", "user", "clave_admin", "telefono", "fecha_nacimiento", "edad", "creation")
     search_fields = ("user__username", "user__email", "user__first_name", "user__last_name", "clave_admin", "rfc")
     list_filter = ("creation",)
 

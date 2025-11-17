@@ -5,12 +5,6 @@ from rest_framework.authentication import TokenAuthentication
 from django.contrib.auth.models import AbstractUser, User
 from django.conf import settings
 
-from django.db import models
-from django.contrib.auth.models import User
-
-from rest_framework.authentication import TokenAuthentication
-
-
 # MODEL tokens
 
 class BearerTokenAuthentication(TokenAuthentication):
@@ -44,7 +38,7 @@ class Capturadores(models.Model):
         return f"Perfil del capturador {self.user.first_name} {self.user.last_name}"
 
 
-#Models for Captura, DetalleCaptura
+# Models for Captura, DetalleCaptura
 class Captura(models.Model):
     id = models.BigAutoField(primary_key=True)
     folio = models.CharField(max_length=50, unique=True, null=False, blank=False)
@@ -60,12 +54,74 @@ class Captura(models.Model):
 class DetalleCaptura(models.Model):
     id = models.BigAutoField(primary_key=True)
     captura = models.ForeignKey(Captura, on_delete=models.CASCADE, related_name="detalles")
-    producto_codigo = models.CharField(max_length=100)
+    producto_codigo = models.CharField(max_length=100) # Este es el código que introduce el usuario (puede ser clave o código de barras)
     cantidad_contada = models.PositiveIntegerField()
 
     def __str__(self):
         return f"{self.cantidad_contada} de {self.producto_codigo} en folio {self.captura.folio}"
 
 
-# Model for Productos
-class Productos(models.Model):
+# Modelos para Microsip (Datos de Referencia Ligeros)
+
+# Mapea ARTICULOS.SEGUIMIENTO (0: Ninguno, 1: Lote, 2: Serie)
+SEGUIMIENTO_CHOICES = [
+    ('N', 'Ninguno (0)'),
+    ('L', 'Lotes (1)'),
+    ('S', 'Series (2)'),
+]
+
+class Articulo(models.Model):
+    """
+    Modelo de referencia ligero para Artículos de Microsip.
+    Sirve como caché para búsquedas rápidas (código de barras) y para obtener
+    datos críticos de la API de Inventarios (ID primario, tipo de seguimiento)
+    sin hacer llamadas lentas a la DLL.
+    """
+    id = models.BigAutoField(primary_key=True)
+
+    # Campo CRÍTICO: El ID interno que RenglonEntrada acepta (ARTICULOS.ARTICULO_ID)
+    articulo_id_msip = models.IntegerField(
+        unique=True, 
+        db_index=True,
+        verbose_name="ID Microsip (ARTICULO_ID)"
+    )
+
+    # Clave alfanumérica visible (ARTICULOS.CLAVE o similar)
+    clave = models.CharField(
+        max_length=50, 
+        unique=True,
+        verbose_name="Clave Alfanumérica Microsip"
+    )
+
+    # Nombre/Descripción
+    nombre = models.CharField(max_length=150)
+
+    # Campo CRÍTICO: Permite la búsqueda rápida por escaneo
+    codigo_barras = models.CharField(
+        max_length=50, 
+        null=True, 
+        blank=True, 
+        db_index=True,
+        verbose_name="Código de Barras"
+    )
+
+    # Campo CRÍTICO: Mantiene el tipo de control (0, 1, 2)
+    seguimiento_tipo = models.CharField(
+        max_length=1, 
+        choices=SEGUIMIENTO_CHOICES, 
+        default='N',
+        verbose_name="Tipo de Seguimiento"
+    )
+    
+    # Metadata para control de caché
+    ultima_sincronizacion = models.DateTimeField(
+        auto_now=True, 
+        verbose_name="Última Sincronización"
+    )
+
+    class Meta:
+        verbose_name = "Artículo Microsip"
+        verbose_name_plural = "Artículos Microsip"
+
+    def __str__(self):
+        return f"[{self.clave}] {self.nombre}"

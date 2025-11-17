@@ -108,3 +108,27 @@ REST_FRAMEWORK = {
         'django_filters.rest_framework.DjangoFilterBackend',
     ),
 }
+
+
+# -------------------------------------------------------------------------
+# MICROSIP INTEGRATION SETTINGS
+# -------------------------------------------------------------------------
+
+MICROSIP_CONFIG = {
+    # CRÍTICO: Usar ruta UNC para el servidor remoto 
+    # Ejemplo de producción: r'\\SERVIDOR_MSIP\DATOS_MSIP\Empresa.fdb'
+    'DB_FILE': r'\\servidor\microsip\Empresa.fdb', 
+    
+    # Usuario y contraseña de Firebird/Microsip (Codificados a latin-1 en el servicio)
+    'USER': 'SYSDBA', 
+    'PASSWORD': 'tu_clave_de_produccion_aqui', 
+    
+    # Configuración de los IDs internos de Microsip 
+    'CONCEPTOS': {
+        'ENTRADA_COMPRA_ID': 1,  
+        'ALMACEN_PRINCIPAL_ID': 1 
+    },
+    
+    # Campo a usar para la búsqueda rápida en la BD de Microsip
+    'CAMPO_BUSQUEDA_DEFECTO': 'CODIGO_BARRAS' 
+}

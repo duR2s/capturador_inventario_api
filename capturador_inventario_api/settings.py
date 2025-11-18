@@ -117,11 +117,11 @@ REST_FRAMEWORK = {
 MICROSIP_CONFIG = {
     # CRÍTICO: Usar ruta UNC para el servidor remoto 
     # Ejemplo de producción: r'\\SERVIDOR_MSIP\DATOS_MSIP\Empresa.fdb'
-    'DB_FILE': r'\\servidor\microsip\Empresa.fdb', 
+    'DB_FILE': r'192.168.0.30:C:\Microsip datos\REFACCIONES VERGARA.FDB', 
     
     # Usuario y contraseña de Firebird/Microsip (Codificados a latin-1 en el servicio)
-    'USER': 'SYSDBA', 
-    'PASSWORD': 'tu_clave_de_produccion_aqui', 
+    'USER': 'SISTEMAS', 
+    'PASSWORD': '123456', 
     
     # Configuración de los IDs internos de Microsip 
     'CONCEPTOS': {

@@ -3,7 +3,10 @@ from ctypes import c_int, c_char_p, c_double, windll, create_string_buffer
 # --- CONFIGURACIÓN DE LA DLL (ApiMicrosip.dll) ---
 # Se asume que la DLL está accesible en el PATH o en la carpeta del script/ejecutable.
 try:
-    microsip_dll = windll.LoadLibrary("ApiMicrosip.dll")
+    # Reemplaza esta línea con la ruta ABSOLUTA y COMPLETA a tu ApiMicrosip.dll
+    DLL_PATH = r"C:\Users\Vergara\Documents\GitHub\capturador_inventario_proyecto\env\capturador_inventario_api\Scripts\ApiMicrosip.dll" 
+
+    microsip_dll = windll.LoadLibrary(DLL_PATH)
 except OSError as e:
     print(f"Error al cargar la DLL: {e}. Asegúrate de que estás usando Python 32-bit (x86) y que la DLL está accesible.")
     raise

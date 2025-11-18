@@ -1,10 +1,21 @@
 # tu_app/microsip_service.py - Funciones Esenciales
-from ctypes import c_int, c_char_p, c_double, byref, create_string_buffer
+from ctypes import c_int, c_char_p, c_double, byref, create_string_buffer, windll
 from datetime import datetime
-from django.conf import settings # ¡Nueva Importación!
+from django.conf import settings 
 
 # Importa las declaraciones de la DLL.
-from microsip_api import microsip_dll
+# Se actualiza la importación según la nueva estructura de carpetas indicada.
+from capturador_inventario_api.microsip_api.microsip_api import microsip_dll
+
+# NOTA: Debemos declarar la función GetLastErrorCode de la API Básica aquí, 
+# ya que solo se declaró la inGetLastErrorMessage (API Inventarios) en el archivo de declaraciones.
+try:
+    microsip_dll.GetLastErrorCode.restype = c_int
+except AttributeError:
+    # Esto manejará si no se encuentra GetLastErrorCode en la DLL si el archivo de 
+    # declaraciones no estaba completo, aunque es estándar.
+    pass
+
 
 class MicrosipService:
     # Constructor modificado para leer de settings
@@ -55,9 +66,27 @@ class MicrosipService:
             
             # 2. Conexión a la BD
             result = microsip_dll.DBConnect(self.db_handle, self.db_file, self.user, self.password)
+            
             if result != 0:
-                error = self._get_api_error_message("DBConnect")
-                raise Exception(f"Fallo de conexión a la BD: {error}")
+                # --- INICIO DEL CÓDIGO DE DEPURACIÓN CRÍTICA ---
+                
+                # Intentamos obtener el mensaje de error de texto
+                error_msg = self._get_api_error_message("DBConnect") 
+                
+                # Obtenemos el código de error entero de la API Básica (GetLastErrorCode)
+                # que es el más fiable para DBConnect (Api - Acceso básico - Refer.pdf, pág. 6)
+                error_code_basica = microsip_dll.GetLastErrorCode() 
+                
+                print(f"\n--- DEBUG DE CONEXIÓN FALLIDA ---")
+                print(f"DEBUG: DBConnect retornó código interno: {result}")
+                print(f"DEBUG: API Básica FLastErrorCode (GetLastErrorCode): {error_code_basica}")
+                print(f"DEBUG: Ruta usada: {self.db_file.decode('latin-1')}")
+                print(f"-----------------------------------\n")
+
+                # Los códigos de error de DBConnect (API Básica) son: 
+                # 3=BD inexistente, 4=Usuario o password incorrectos, 6=Error de licencia.
+                raise Exception(f"Fallo de conexión a la BD. Código de API: {result}. Mensaje: {error_msg}")
+                # --- FIN DEL CÓDIGO DE DEPURACIÓN CRÍTICA ---
             
             self.is_connected = True
 
@@ -75,8 +104,7 @@ class MicrosipService:
             print(f"Error fatal durante la conexión: {e}")
             self.is_connected = False
             self.microsip_connected = False
-            # Opcionalmente, lanzar o manejar el error
-            raise
+            raise # Levantamos la excepción para que sea manejada por la vista (ViewSet).
 
     def desconectar(self):
         """Llama a DBDisconnect(-1) para liberar la licencia y recursos."""
@@ -147,19 +175,33 @@ class MicrosipService:
                 byref(articulo_id_val)
             )
 
-            # Recuperar SEGUIMIENTO (Integer)
-            seguimiento_val = c_int(0)
-            result_seg = microsip_dll.SqlGetFieldAsInteger(
+            # --- INICIO DE LA CORRECCIÓN DE LECTURA DE SEGUIMIENTO ---
+            # Recuperar SEGUIMIENTO como String (PChar), y luego convertir en Python
+            seguimiento_val_str = create_string_buffer(5) # Buffer para '0', '1', '2' y nulo
+            result_seg = microsip_dll.SqlGetFieldAsString(
                 self.sql_handle, 
                 b"SEGUIMIENTO", 
-                byref(seguimiento_val)
+                seguimiento_val_str # Los PChar de salida (Var) se pasan directamente
             )
             
             if result_id == 0 and result_seg == 0:
+                
+                # 1. Decodificar el PChar, limpiar espacios y convertir a entero.
+                seguimiento_str = seguimiento_val_str.value.decode('latin-1', errors='ignore').strip()
+                
+                # Usamos try-except para una conversión segura, si no es dígito, asumimos 0 (Ninguno)
+                try:
+                    seguimiento_int = int(seguimiento_str)
+                except ValueError:
+                    # Si viene vacío, Null, o texto inesperado, asumimos 0 para evitar fallos.
+                    seguimiento_int = 0
+                
                 articulo_data = {
                     "ARTICULO_ID": articulo_id_val.value,
-                    "SEGUIMIENTO": seguimiento_val.value
+                    "SEGUIMIENTO": seguimiento_int
                 }
+            # --- FIN DE LA CORRECCIÓN DE LECTURA DE SEGUIMIENTO ---
+            
             else:
                 error = self._get_api_error_message("SqlGetFieldAsInteger (ID/SEGUIMIENTO)")
                 microsip_dll.SqlClose(self.sql_handle)
@@ -224,6 +266,7 @@ class MicrosipService:
                 #     raise Exception(f"Artículo con clave {clave_busqueda} no encontrado en caché local.")
                 
                 # --- INICIO DEL MOCK/CONSULTA DIRECTA ---
+                # NOTA: En la lógica de producción real, este paso se salta y usa la caché. 
                 datos_articulo = self._obtener_datos_articulo("ARTICULO_ID", clave_busqueda)
                 
                 if not datos_articulo:
@@ -302,3 +345,56 @@ class MicrosipService:
             microsip_dll.AbortaDoctoInventarios()
             print(f"ERROR: La transacción ha sido abortada. Causa: {e}")
             return False
+
+
+# --- ----------------------------------------------------------- ---
+# --- PRUEBA DE CONEXIÓN Y LECTURA (Bajo Impacto) ---
+# --- ----------------------------------------------------------- ---
+
+def prueba_1_conexion_lectura():
+    """
+    Prueba el ciclo completo de vida: Conectar, consultar un artículo (solo lectura), y Desconectar.
+    """
+    print("=============================================")
+    print("🚀 INICIANDO PRUEBA 1: CONEXIÓN Y SOLO LECTURA")
+    print("=============================================")
+    
+    # NOTA: La clase ahora se inicializa sin parámetros, leyendo de settings.py
+    service = MicrosipService()
+    
+    try:
+        # Paso 1: Conectar (Toma la licencia y establece DB Inventarios)
+        service.conectar()
+        print("\n✅ Conexión con la API de Microsip establecida.")
+
+        # --- Paso 2: Consulta Segura (Simulación de búsqueda de artículo conocido) ---
+        # Usamos un ARTICULO_ID conocido que debe existir en tu BD para asegurar la lectura.
+        
+        # NOTA DE DISEÑO: Usar el CAMPO_BUSQUEDA_DEFECTO de settings para simular el flujo
+        # de producción, aunque aquí se busca por ID por la naturaleza de la prueba.
+        ARTICULO_CLAVE_A_BUSCAR = 1 
+        
+        # Nota: Usamos "ARTICULO_ID" aquí para la prueba, pero en producción, usarías 
+        # settings.MICROSIP_CONFIG['CAMPO_BUSQUEDA_DEFECTO'] si buscaras por código de barras.
+        datos_articulo = service._obtener_datos_articulo("ARTICULO_ID", ARTICULO_CLAVE_A_BUSCAR)
+
+        if datos_articulo:
+            print(f"\n✅ Consulta exitosa (SqlQry). Artículo leído:")
+            print(f"    > ID Primario (para RenglonEntrada): {datos_articulo['ARTICULO_ID']}")
+            print(f"    > Tipo de Seguimiento (0=N, 1=Lote, 2=Serie): {datos_articulo['SEGUIMIENTO']}")
+        else:
+            print("\n❌ FALLO de Consulta: El artículo de prueba no fue encontrado.")
+            # Aunque la consulta puede fallar si el artículo no existe, 
+            # el ciclo de vida de la conexión sigue siendo válido si no hubo un error de DLL/Firebird.
+            
+    except Exception as e:
+        print(f"\n❌ FALLO DE PRUEBA: Error durante el ciclo de vida o consulta.")
+        print(f"    Causa del error: {e}")
+        return False
+        
+    finally:
+        # Paso 3: Desconexión y Liberación de Licencia (CRÍTICO)
+        service.desconectar()
+        print("\n✅ Desconexión de la API y liberación de licencia completada.")
+        print("=============================================")
+        return True

@@ -1,4 +1,4 @@
-from ctypes import c_int, c_char_p, c_double, windll, create_string_buffer
+from ctypes import c_int, c_char_p, c_double, windll, create_string_buffer, POINTER, c_char
 
 # --- CONFIGURACIÓN DE LA DLL (ApiMicrosip.dll) ---
 # Se asume que la DLL está accesible en el PATH o en la carpeta del script/ejecutable.
@@ -20,7 +20,10 @@ microsip_dll.inSetErrorHandling.restype = c_int
 
 # inGetLastErrorMessage (ErrorMessage: PChar): Integer; stdcall;
 # Nota: La Api Inventarios usa inGetLastErrorMessage
-microsip_dll.inGetLastErrorMessage.argtypes = [c_char_p]
+# Esta función rellena un buffer (PChar), por lo que debemos aceptar un
+# puntero a char (POINTER(c_char)) en lugar de c_char_p para poder pasar
+# `create_string_buffer(...)` sin errores de conversión.
+microsip_dll.inGetLastErrorMessage.argtypes = [POINTER(c_char)]
 microsip_dll.inGetLastErrorMessage.restype = c_int
 
 # DBDisconnect(DBHandle: Integer): Integer; stdcall;
@@ -53,7 +56,10 @@ microsip_dll.SqlNext.argtypes = [c_int]
 microsip_dll.SqlNext.restype = c_int
 
 # SqlGetFieldAsInteger (SqlHandle: Integer; FieldName: PChar; Var FieldValue: Integer): Integer; stdcall;
-microsip_dll.SqlGetFieldAsInteger.argtypes = [c_int, c_char_p, c_int]
+# El tercer parámetro es una salida por referencia (var / pointer to Integer).
+# Debe declararse como POINTER(c_int) para que `byref(c_int())` sea aceptado
+# sin que ctypes intente convertir el CArgObject a un entero.
+microsip_dll.SqlGetFieldAsInteger.argtypes = [c_int, c_char_p, POINTER(c_int)]
 microsip_dll.SqlGetFieldAsInteger.restype = c_int
 
 # NewSql (TrnHandle: Integer): Integer; stdcall;
@@ -68,6 +74,11 @@ microsip_dll.SqlClose.restype = c_int
 # SqlSetParamAsString (SqlHandle: Integer; ParamName, ParamValue: PChar): Integer; stdcall;
 microsip_dll.SqlSetParamAsString.argtypes = [c_int, c_char_p, c_char_p]
 microsip_dll.SqlSetParamAsString.restype = c_int
+
+# SqlGetFieldAsString (SqlHandle: Integer; FieldName: PChar; Buffer: PChar): Integer; stdcall;
+# Declaramos esta función para poder pasar `create_string_buffer(...)` como salida.
+microsip_dll.SqlGetFieldAsString.argtypes = [c_int, c_char_p, POINTER(c_char)]
+microsip_dll.SqlGetFieldAsString.restype = c_int
 
 # --- API INVENTARIOS (Funciones de Entrada) ---
 

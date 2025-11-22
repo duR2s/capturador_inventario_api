@@ -120,7 +120,7 @@ MICROSIP_CONFIG = {
     'DB_FILE': r'192.168.0.30:C:\Microsip datos\REFACCIONES VERGARA.FDB', 
     
     # Usuario y contraseña de Firebird/Microsip (Codificados a latin-1 en el servicio)
-    'USER': 'SISTEMAS', 
+    'USER': 'DJANGOSERVIDOR', 
     'PASSWORD': '123456', 
     
     # Configuración de los IDs internos de Microsip 

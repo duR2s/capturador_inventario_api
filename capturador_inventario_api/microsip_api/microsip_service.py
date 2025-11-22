@@ -2,9 +2,9 @@
 from ctypes import c_int, c_char_p, c_double, byref, create_string_buffer, windll
 from datetime import datetime
 from django.conf import settings 
+from django.core.exceptions import ImproperlyConfigured # Importación para manejar errores de configuración
 
 # Importa las declaraciones de la DLL.
-# Se actualiza la importación según la nueva estructura de carpetas indicada.
 from capturador_inventario_api.microsip_api.microsip_api import microsip_dll
 
 # NOTA: Debemos declarar la función GetLastErrorCode de la API Básica aquí, 
@@ -12,8 +12,6 @@ from capturador_inventario_api.microsip_api.microsip_api import microsip_dll
 try:
     microsip_dll.GetLastErrorCode.restype = c_int
 except AttributeError:
-    # Esto manejará si no se encuentra GetLastErrorCode en la DLL si el archivo de 
-    # declaraciones no estaba completo, aunque es estándar.
     pass
 
 
@@ -21,7 +19,10 @@ class MicrosipService:
     # Constructor modificado para leer de settings
     def __init__(self):
         # Lee la configuración del diccionario MICROSIP_CONFIG
-        config = settings.MICROSIP_CONFIG
+        try:
+            config = settings.MICROSIP_CONFIG
+        except AttributeError:
+             raise ImproperlyConfigured("La configuración MICROSIP_CONFIG no está definida en settings.py.")
 
         # Handles internos de conexión
         self.db_handle = microsip_dll.NewDB()  # Handle de la BD
@@ -61,7 +62,6 @@ class MicrosipService:
         """Establece la conexión a la BD Microsip y Metadatos."""
         try:
             # 1. Configurar manejo de errores para la API de Inventarios (inSetErrorHandling(0, 0))
-            # No levantar excepciones, solo devolver código de error.
             microsip_dll.inSetErrorHandling(0, 0)
             
             # 2. Conexión a la BD
@@ -70,11 +70,7 @@ class MicrosipService:
             if result != 0:
                 # --- INICIO DEL CÓDIGO DE DEPURACIÓN CRÍTICA ---
                 
-                # Intentamos obtener el mensaje de error de texto
                 error_msg = self._get_api_error_message("DBConnect") 
-                
-                # Obtenemos el código de error entero de la API Básica (GetLastErrorCode)
-                # que es el más fiable para DBConnect (Api - Acceso básico - Refer.pdf, pág. 6)
                 error_code_basica = microsip_dll.GetLastErrorCode() 
                 
                 print(f"\n--- DEBUG DE CONEXIÓN FALLIDA ---")
@@ -83,8 +79,6 @@ class MicrosipService:
                 print(f"DEBUG: Ruta usada: {self.db_file.decode('latin-1')}")
                 print(f"-----------------------------------\n")
 
-                # Los códigos de error de DBConnect (API Básica) son: 
-                # 3=BD inexistente, 4=Usuario o password incorrectos, 6=Error de licencia.
                 raise Exception(f"Fallo de conexión a la BD. Código de API: {result}. Mensaje: {error_msg}")
                 # --- FIN DEL CÓDIGO DE DEPURACIÓN CRÍTICA ---
             
@@ -104,7 +98,7 @@ class MicrosipService:
             print(f"Error fatal durante la conexión: {e}")
             self.is_connected = False
             self.microsip_connected = False
-            raise # Levantamos la excepción para que sea manejada por la vista (ViewSet).
+            raise 
 
     def desconectar(self):
         """Llama a DBDisconnect(-1) para liberar la licencia y recursos."""
@@ -119,30 +113,32 @@ class MicrosipService:
                 print("Desconexión de Microsip API exitosa.")
             else:
                 print(f"Advertencia durante la desconexión: {error}")
-
-    def _obtener_datos_articulo(self, campo_busqueda, valor_busqueda):
+    
+    # --- NUEVA FUNCIÓN: Traduce clave auxiliar a ARTICULO_ID primario ---
+    def _obtener_id_por_clave_auxiliar(self, campo_busqueda, valor_busqueda):
         """
-        Busca un artículo por cualquier campo (ID, código de barras, clave de proveedor, etc.)
-        en la BD Microsip usando SqlQry.
-        Devuelve un diccionario con los datos críticos (ARTICULO_ID, SEGUIMIENTO).
-        Devuelve None si no encuentra el artículo.
+        Busca en CLAVES_ARTICULOS (o en cualquier campo que se indique) y devuelve el ARTICULO_ID asociado.
         """
         if not self.microsip_connected:
-            raise Exception("Microsip API no conectada. Conecte primero.")
+            raise Exception("Microsip API no conectada.")
 
-        # Construcción dinámica de la consulta para buscar por campo auxiliar.
-        query = (
-            "SELECT a.ARTICULO_ID, a.NOMBRE, a.ES_ALMACENABLE, a.ES_JUEGO, a.SEGUIMIENTO "
-            f"FROM ARTICULOS a WHERE a.{campo_busqueda} = :VALOR"
+        # Consulta que busca en la tabla auxiliar
+        query_auxiliar = (
+            "SELECT a.ARTICULO_ID "
+            f"FROM CLAVES_ARTICULOS a WHERE a.CLAVE_ARTICULO = :VALOR"
         )
         
+        # NOTA: Para una búsqueda más flexible (que también contemple ARTICULOS.CLAVE), 
+        # se podría usar un Stored Procedure (objeto Sp) o una consulta más compleja/JOIN,
+        # pero iniciamos con CLAVES_ARTICULOS como lo sugiere el error.
+        
         # 1. Establecer el query
-        result = microsip_dll.SqlQry(self.sql_handle, query.encode('latin-1'))
+        result = microsip_dll.SqlQry(self.sql_handle, query_auxiliar.encode('latin-1'))
         if result != 0:
-            error = self._get_api_error_message("SqlQry (Busqueda Articulo)")
-            raise Exception(f"Error al establecer el query: {error}")
+            error = self._get_api_error_message("SqlQry (Busqueda Auxiliar)")
+            raise Exception(f"Error al establecer el query auxiliar: {error}")
 
-        # 2. Asignar el parámetro PChar usando SqlSetParamAsString 
+        # 2. Asignar el parámetro
         param_name_bytes = b"VALOR"
         param_value_bytes = str(valor_busqueda).encode('latin-1')
         
@@ -152,22 +148,83 @@ class MicrosipService:
             param_value_bytes
         )
         if result != 0:
-            error = self._get_api_error_message("SqlSetParamAsString (Busqueda Articulo)")
+            error = self._get_api_error_message("SqlSetParamAsString (Busqueda Auxiliar)")
             microsip_dll.SqlClose(self.sql_handle)
             raise Exception(f"Error al asignar parámetro de búsqueda: {error}")
+        
+        # 3. Ejecutar y leer
+        result = microsip_dll.SqlExecQuery(self.sql_handle)
+        if result != 0:
+            error = self._get_api_error_message("SqlExecQuery (Busqueda Auxiliar)")
+            microsip_dll.SqlClose(self.sql_handle)
+            raise Exception(f"Error al ejecutar consulta auxiliar: {error}")
+
+        articulo_id = None
+        if microsip_dll.SqlNext(self.sql_handle) == 0: # Si hay un registro
+            articulo_id_val = c_int(0)
+            result_id = microsip_dll.SqlGetFieldAsInteger(
+                self.sql_handle, 
+                b"ARTICULO_ID", 
+                byref(articulo_id_val)
+            )
+            if result_id == 0:
+                articulo_id = articulo_id_val.value
+            
+        microsip_dll.SqlClose(self.sql_handle)
+        return articulo_id # Devuelve el ID primario o None
+
+    
+    # --- FUNCIÓN CENTRAL: Obtiene datos finales usando ARTICULO_ID ---
+    def _obtener_datos_articulo(self, articulo_id):
+        """
+        Consulta la tabla ARTICULOS directamente usando el ARTICULO_ID primario.
+        Esta es la SEGUNDA consulta en el flujo de búsqueda por clave auxiliar.
+        """
+        if not self.microsip_connected:
+            raise Exception("Microsip API no conectada. Conecte primero.")
+
+        # Construcción dinámica de la consulta usando ARTICULO_ID primario.
+        query = (
+            "SELECT a.ARTICULO_ID, a.NOMBRE, a.ES_ALMACENABLE, a.ES_JUEGO, a.SEGUIMIENTO "
+            f"FROM ARTICULOS a WHERE a.ARTICULO_ID = :VALOR"
+        )
+        
+        # 1. Establecer el query
+        result = microsip_dll.SqlQry(self.sql_handle, query.encode('latin-1'))
+        if result != 0:
+            error = self._get_api_error_message("SqlQry (Busqueda Articulo Final)")
+            raise Exception(f"Error al establecer el query: {error}")
+
+        # 2. Asignar el parámetro (Esta vez es un entero, pero usaremos el string encoder para ser genéricos, 
+        # aunque la API tiene SqlSetParamAsInteger)
+        param_name_bytes = b"VALOR"
+        
+        # Usamos SqlSetParamAsInteger ya que sabemos que el valor es un ID primario entero.
+        result = microsip_dll.SqlSetParamAsInteger(
+            self.sql_handle, 
+            param_name_bytes, 
+            c_int(articulo_id)
+        )
+
+        if result != 0:
+            error = self._get_api_error_message("SqlSetParamAsInteger (Busqueda Articulo Final)")
+            microsip_dll.SqlClose(self.sql_handle)
+            raise Exception(f"Error al asignar parámetro de búsqueda final: {error}")
         
         # 3. Ejecutar el query
         result = microsip_dll.SqlExecQuery(self.sql_handle)
         if result != 0:
-            error = self._get_api_error_message("SqlExecQuery (Busqueda Articulo)")
+            error = self._get_api_error_message("SqlExecQuery (Busqueda Articulo Final)")
             microsip_dll.SqlClose(self.sql_handle)
-            raise Exception(f"Error al ejecutar consulta: {error}")
+            raise Exception(f"Error al ejecutar consulta final: {error}")
 
         # 4. Leer el primer registro
         articulo_data = None
         if microsip_dll.SqlNext(self.sql_handle) == 0: # Si hay un registro
             
-            # Recuperar ARTICULO_ID (Integer)
+            # --- LECTURA DE CAMPOS ---
+            
+            # 4.1. Recuperar ARTICULO_ID (Integer)
             articulo_id_val = c_int(0)
             result_id = microsip_dll.SqlGetFieldAsInteger(
                 self.sql_handle, 
@@ -175,44 +232,49 @@ class MicrosipService:
                 byref(articulo_id_val)
             )
 
-            # --- INICIO DE LA CORRECCIÓN DE LECTURA DE SEGUIMIENTO ---
-            # Recuperar SEGUIMIENTO como String (PChar), y luego convertir en Python
-            seguimiento_val_str = create_string_buffer(5) # Buffer para '0', '1', '2' y nulo
+            # 4.2. Recuperar SEGUIMIENTO (String -> Python Int)
+            seguimiento_val_str = create_string_buffer(5)
             result_seg = microsip_dll.SqlGetFieldAsString(
                 self.sql_handle, 
                 b"SEGUIMIENTO", 
-                seguimiento_val_str # Los PChar de salida (Var) se pasan directamente
+                seguimiento_val_str
+            )
+
+            # 4.3. Recuperar NOMBRE (String)
+            nombre_val_str = create_string_buffer(151) 
+            result_nombre = microsip_dll.SqlGetFieldAsString(
+                self.sql_handle, 
+                b"NOMBRE", 
+                nombre_val_str
             )
             
-            if result_id == 0 and result_seg == 0:
+            # --- VALIDACIÓN DE LECTURA Y CONVERSIÓN ---
+            if result_id == 0 and result_seg == 0 and result_nombre == 0:
                 
-                # 1. Decodificar el PChar, limpiar espacios y convertir a entero.
+                # Conversión segura de SEGUIMIENTO
                 seguimiento_str = seguimiento_val_str.value.decode('latin-1', errors='ignore').strip()
-                
-                # Usamos try-except para una conversión segura, si no es dígito, asumimos 0 (Ninguno)
                 try:
                     seguimiento_int = int(seguimiento_str)
                 except ValueError:
-                    # Si viene vacío, Null, o texto inesperado, asumimos 0 para evitar fallos.
                     seguimiento_int = 0
-                
+
                 articulo_data = {
                     "ARTICULO_ID": articulo_id_val.value,
-                    "SEGUIMIENTO": seguimiento_int
+                    "SEGUIMIENTO": seguimiento_int,
+                    "NOMBRE": nombre_val_str.value.decode('latin-1', errors='ignore').strip()
                 }
-            # --- FIN DE LA CORRECCIÓN DE LECTURA DE SEGUIMIENTO ---
             
             else:
-                error = self._get_api_error_message("SqlGetFieldAsInteger (ID/SEGUIMIENTO)")
+                error = self._get_api_error_message("SqlGetFieldAs (ID/SEGUIMIENTO/NOMBRE)")
                 microsip_dll.SqlClose(self.sql_handle)
-                raise Exception(f"Error al leer campos ID/SEGUIMIENTO: {error}")
+                raise Exception(f"Error al leer campos del artículo: {error}")
 
         microsip_dll.SqlClose(self.sql_handle)
         return articulo_data # Devuelve el dict o None
     
+    # Función de compatibilidad para el ejemplo, ahora obsoleta si se usa el modelo Articulo.
     def _ejecutar_consulta_articulo(self, articulo_id):
-        """Función de compatibilidad para el ejemplo, ahora obsoleta si se usa el modelo Articulo."""
-        datos = self._obtener_datos_articulo("ARTICULO_ID", articulo_id)
+        datos = self._obtener_datos_articulo(articulo_id)
         return datos['SEGUIMIENTO'] if datos else None
 
 
@@ -250,34 +312,33 @@ class MicrosipService:
             # 2. RENGLONES
             print("Registrando renglones...")
             for i, renglon in enumerate(renglones_data):
-                # NOTA DE DISEÑO CRÍTICA:
-                # En producción, NO USAR _obtener_datos_articulo aquí.
-                # Se deben obtener los datos del modelo Articulo de Django (Articulo.objects.get(...))
-                # para la UX rápida. Aquí se usa el mock/consulta directa por simplicidad del ejemplo.
                 
                 clave_busqueda = renglon['ArticuloId']
                 
-                # EJEMPLO DE LÓGICA DE PRODUCCIÓN (Comentar si no se usa el mock):
-                # try:
-                #     articulo_cache = Articulo.objects.get(codigo_barras=clave_busqueda)
-                #     articulo_id_final = articulo_cache.articulo_id_msip
-                #     seguimiento = {'N': 0, 'L': 1, 'S': 2}[articulo_cache.seguimiento_tipo]
-                # except Articulo.DoesNotExist:
-                #     raise Exception(f"Artículo con clave {clave_busqueda} no encontrado en caché local.")
+                # --- INICIO DEL MOCK/CONSULTA DIRECTA (AHORA CON DOBLE PASO) ---
                 
-                # --- INICIO DEL MOCK/CONSULTA DIRECTA ---
-                # NOTA: En la lógica de producción real, este paso se salta y usa la caché. 
-                datos_articulo = self._obtener_datos_articulo("ARTICULO_ID", clave_busqueda)
+                # 2.A. Buscar el ARTICULO_ID primario. 
+                # NOTA: En producción, se usaría la caché local de Django (Articulo.objects.get(...))
+                
+                articulo_id_primario = self._obtener_id_por_clave_auxiliar("CLAVE_ARTICULO", clave_busqueda)
+                
+                if not articulo_id_primario:
+                    raise Exception(f"Artículo con Clave Auxiliar {clave_busqueda} no encontrado en Microsip.")
+
+                # 2.B. Obtener los datos finales (seguimiento y nombre) usando el ID primario.
+                datos_articulo = self._obtener_datos_articulo(articulo_id_primario)
                 
                 if not datos_articulo:
-                    raise Exception(f"Artículo con ID/Clave {clave_busqueda} no encontrado.")
+                    # Este caso es improbable si el ID primario fue encontrado, pero se mantiene por seguridad
+                    raise Exception(f"Artículo con ID Primario {articulo_id_primario} no encontrado.")
 
                 articulo_id_final = datos_articulo['ARTICULO_ID']
                 seguimiento = datos_articulo['SEGUIMIENTO']
+                articulo_nombre = datos_articulo['NOMBRE'] 
                 # --- FIN DEL MOCK/CONSULTA DIRECTA ---
                 
 
-                print(f"  Artículo {articulo_id_final} (Clave: {clave_busqueda}) tiene seguimiento: {seguimiento}") # 0=Sin, 1=Lote, 2=Serie
+                print(f"  Artículo {articulo_id_final} ({articulo_nombre}) tiene seguimiento: {seguimiento}")
 
                 # b. RenglonEntrada usa el ID PRIMARIO (articulo_id_final)
                 result = microsip_dll.RenglonEntrada(
@@ -368,24 +429,33 @@ def prueba_1_conexion_lectura():
         print("\n✅ Conexión con la API de Microsip establecida.")
 
         # --- Paso 2: Consulta Segura (Simulación de búsqueda de artículo conocido) ---
-        # Usamos un ARTICULO_ID conocido que debe existir en tu BD para asegurar la lectura.
         
-        # NOTA DE DISEÑO: Usar el CAMPO_BUSQUEDA_DEFECTO de settings para simular el flujo
-        # de producción, aunque aquí se busca por ID por la naturaleza de la prueba.
-        ARTICULO_CLAVE_A_BUSCAR = 1 
+        # Usamos el CAMPO_BUSQUEDA_DEFECTO del settings para simular el flujo UX
+        campo_busqueda = settings.MICROSIP_CONFIG['CAMPO_BUSQUEDA_DEFECTO']
+        # Debes usar una clave real que exista en tu tabla CLAVES_ARTICULOS.CLAVE_ARTICULO
+        CLAVE_AUXILIAR_A_BUSCAR = '7501247418502' # Sustituye por un código de barras real
         
-        # Nota: Usamos "ARTICULO_ID" aquí para la prueba, pero en producción, usarías 
-        # settings.MICROSIP_CONFIG['CAMPO_BUSQUEDA_DEFECTO'] si buscaras por código de barras.
-        datos_articulo = service._obtener_datos_articulo("ARTICULO_ID", ARTICULO_CLAVE_A_BUSCAR)
-
+        # 1. Obtener ID primario (traduce la clave auxiliar)
+        articulo_id_primario = service._obtener_id_por_clave_auxiliar(campo_busqueda, CLAVE_AUXILIAR_A_BUSCAR)
+        
+        if not articulo_id_primario:
+            print(f"\n❌ FALLO de Consulta: La clave auxiliar '{CLAVE_AUXILIAR_A_BUSCAR}' no fue encontrada.")
+            datos_articulo = None
+        else:
+            # 2. Obtener datos finales (seguimiento y nombre)
+            datos_articulo = service._obtener_datos_articulo(articulo_id_primario)
+        
         if datos_articulo:
-            print(f"\n✅ Consulta exitosa (SqlQry). Artículo leído:")
+            print(f"\n✅ Consulta exitosa (Doble Query). Artículo leído:")
+            print(f"    > Clave de búsqueda: {CLAVE_AUXILIAR_A_BUSCAR}")
             print(f"    > ID Primario (para RenglonEntrada): {datos_articulo['ARTICULO_ID']}")
+            print(f"    > Nombre: {datos_articulo['NOMBRE']}")
             print(f"    > Tipo de Seguimiento (0=N, 1=Lote, 2=Serie): {datos_articulo['SEGUIMIENTO']}")
         else:
-            print("\n❌ FALLO de Consulta: El artículo de prueba no fue encontrado.")
-            # Aunque la consulta puede fallar si el artículo no existe, 
-            # el ciclo de vida de la conexión sigue siendo válido si no hubo un error de DLL/Firebird.
+            # Si datos_articulo es None, el error ya fue reportado o no se encontró.
+            if articulo_id_primario:
+                 print("\n❌ FALLO de Consulta: No se pudieron leer los datos finales del ID primario.")
+
             
     except Exception as e:
         print(f"\n❌ FALLO DE PRUEBA: Error durante el ciclo de vida o consulta.")

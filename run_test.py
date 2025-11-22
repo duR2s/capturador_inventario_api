@@ -9,7 +9,6 @@ django.setup()
 # ---------------------------------------------------
 
 from capturador_inventario_api.microsip_api.microsip_service import prueba_1_conexion_lectura
-# Nota: Ajusta la importación de 'tu_app' al nombre real de tu aplicación
 
 if __name__ == '__main__':
     print("--- Inicializando ambiente de Django para prueba de Microsip API ---")

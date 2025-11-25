@@ -8,12 +8,22 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "capturador_inventario_api.setti
 django.setup() 
 # ---------------------------------------------------
 
-from capturador_inventario_api.microsip_api.microsip_service import prueba_1_conexion_lectura
+# Importamos la clase MicrosipService desde la nueva ubicación
+from capturador_inventario_api.microsip_api.microsip_api_sync_Articulos import InventariosService, prueba_1_conexion_lectura
+from capturador_inventario_api.models import Articulo, ClaveAuxiliar
+
 
 if __name__ == '__main__':
     print("--- Inicializando ambiente de Django para prueba de Microsip API ---")
     
-    # Llama a la función de prueba
+    # --------------------------------------------------------------------------
+    # NOTA CRÍTICA PARA LA PRUEBA: 
+    # Antes de ejecutar la prueba, asegúrate de que el modelo ClaveAuxiliar
+    # (y Articulo) tenga aplicada la migración en tu base de datos local de Django.
+    # --------------------------------------------------------------------------
+
+    # La prueba 'prueba_1_conexion_lectura()' ahora orquesta la conexión, 
+    # la sincronización y la validación de la caché local.
     if prueba_1_conexion_lectura():
         print("\nPrueba de Conexión y Lectura FINALIZADA con éxito.")
     else:

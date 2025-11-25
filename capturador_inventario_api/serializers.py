@@ -34,7 +34,7 @@ class CapturadoresSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'creation']
 
 
-# --- 2. Serializadores de Artículos (Caché Microsip) ---
+# --- 2. Serializadores de Artículos y ClavesAuxiliares (Caché Microsip) ---
 
 class ArticuloSerializer(serializers.ModelSerializer):
     """
@@ -49,17 +49,21 @@ class ArticuloSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Articulo
-        fields = [
-            'id', 
-            'articulo_id_msip', 
-            'clave', 
-            'nombre', 
-            'codigo_barras', 
-            'seguimiento_tipo',
-            'seguimiento_display', # Campo para mostrar 'Lotes (1)', 'Series (2)', etc.
-            'ultima_sincronizacion'
-        ]
+        fields = "__all__"
         read_only_fields = ['id', 'ultima_sincronizacion']
+
+
+class ClaveAuxiliarSerializer(serializers.ModelSerializer):
+    """
+    Serializador para el modelo ClaveAuxiliar (Códigos de barras u otras claves).
+    Incluye información del artículo relacionado para contexto.
+    """
+    articulo = ArticuloSerializer(read_only=True)
+
+    class Meta:
+        model = ClaveAuxiliar
+        fields = "__all__"
+        read_only_fields = ['id']
 
 
 # --- 3. Serializadores de Captura y Detalle ---

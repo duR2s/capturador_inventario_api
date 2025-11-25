@@ -73,9 +73,7 @@ SEGUIMIENTO_CHOICES = [
 class Articulo(models.Model):
     """
     Modelo de referencia ligero para Artículos de Microsip.
-    Sirve como caché para búsquedas rápidas (código de barras) y para obtener
-    datos críticos de la API de Inventarios (ID primario, tipo de seguimiento)
-    sin hacer llamadas lentas a la DLL.
+    Sirve como caché de datos maestros.
     """
     id = models.BigAutoField(primary_key=True)
 
@@ -95,15 +93,6 @@ class Articulo(models.Model):
 
     # Nombre/Descripción
     nombre = models.CharField(max_length=150)
-
-    # Campo CRÍTICO: Permite la búsqueda rápida por escaneo
-    codigo_barras = models.CharField(
-        max_length=50, 
-        null=True, 
-        blank=True, 
-        db_index=True,
-        verbose_name="Código de Barras"
-    )
 
     # Campo CRÍTICO: Mantiene el tipo de control (0, 1, 2)
     seguimiento_tipo = models.CharField(
@@ -125,3 +114,32 @@ class Articulo(models.Model):
 
     def __str__(self):
         return f"[{self.clave}] {self.nombre}"
+
+
+class ClaveAuxiliar(models.Model):
+    """
+    Modelo para manejar claves secundarias, como códigos de barras,
+    asociadas a un artículo principal (relación 1:N).
+    """
+    id = models.BigAutoField(primary_key=True)
+    
+    clave = models.CharField(
+        max_length=50, 
+        verbose_name="Clave Auxiliar / Código de Barras"
+    )
+    
+    # Relación al artículo principal.
+    articulo = models.ForeignKey(
+        Articulo, 
+        on_delete=models.CASCADE, 
+        related_name='claves_auxiliares'
+    )
+    
+    class Meta:
+        verbose_name = "Clave Auxiliar"
+        verbose_name_plural = "Claves Auxiliares"
+        # CRÍTICO: Asegura que el código de barras/clave sea único a nivel global.
+        unique_together = ('clave',)
+
+    def __str__(self):
+        return f"Clave {self.clave} para Articulo ID {self.articulo.articulo_id_msip}"

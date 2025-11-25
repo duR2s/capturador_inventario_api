@@ -26,6 +26,9 @@ microsip_dll.inSetErrorHandling.restype = c_int
 microsip_dll.inGetLastErrorMessage.argtypes = [POINTER(c_char)]
 microsip_dll.inGetLastErrorMessage.restype = c_int
 
+# GetLastErrorCode: Integer; stdcall; (API Básica)
+microsip_dll.GetLastErrorCode.restype = c_int
+
 # DBDisconnect(DBHandle: Integer): Integer; stdcall;
 microsip_dll.DBDisconnect.argtypes = [c_int]
 microsip_dll.DBDisconnect.restype = c_int
@@ -55,6 +58,11 @@ microsip_dll.SqlExecQuery.restype = c_int
 microsip_dll.SqlNext.argtypes = [c_int]
 microsip_dll.SqlNext.restype = c_int
 
+# **NUEVA DECLARACIÓN DE SQLEOF** (API Básica)
+# SqlEof (SqlHandle: Integer): Integer; stdcall;
+microsip_dll.SqlEof.argtypes = [c_int]
+microsip_dll.SqlEof.restype = c_int
+
 # SqlGetFieldAsInteger (SqlHandle: Integer; FieldName: PChar; Var FieldValue: Integer): Integer; stdcall;
 # El tercer parámetro es una salida por referencia (var / pointer to Integer).
 # Debe declararse como POINTER(c_int) para que `byref(c_int())` sea aceptado
@@ -70,7 +78,6 @@ microsip_dll.NewSql.restype = c_int
 microsip_dll.SqlClose.argtypes = [c_int]
 microsip_dll.SqlClose.restype = c_int
 
-# **NUEVA DECLARACIÓN NECESARIA para la búsqueda genérica**
 # SqlSetParamAsString (SqlHandle: Integer; ParamName, ParamValue: PChar): Integer; stdcall;
 microsip_dll.SqlSetParamAsString.argtypes = [c_int, c_char_p, c_char_p]
 microsip_dll.SqlSetParamAsString.restype = c_int

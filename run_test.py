@@ -9,7 +9,7 @@ django.setup()
 # ---------------------------------------------------
 
 # Importamos la clase MicrosipService desde la nueva ubicación
-from capturador_inventario_api.microsip_api.microsip_api_sync_Articulos import InventariosService, prueba_1_conexion_lectura
+from capturador_inventario_api.microsip_api.microsip_api_sync_Articulos import InventariosService, prueba_1_sincronizacion
 from capturador_inventario_api.models import Articulo, ClaveAuxiliar
 
 
@@ -24,7 +24,7 @@ if __name__ == '__main__':
 
     # La prueba 'prueba_1_conexion_lectura()' ahora orquesta la conexión, 
     # la sincronización y la validación de la caché local.
-    if prueba_1_conexion_lectura():
+    if prueba_1_sincronizacion():
         print("\nPrueba de Conexión y Lectura FINALIZADA con éxito.")
     else:
         print("\nPrueba de Conexión y Lectura FALLIDA. Revisa los logs.")

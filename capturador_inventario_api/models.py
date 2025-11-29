@@ -101,6 +101,12 @@ class Articulo(models.Model):
         default='N',
         verbose_name="Tipo de Seguimiento"
     )
+
+    # SOFT DELETE: Indica si el artículo sigue vigente en Microsip
+    activo = models.BooleanField(
+        default=True,
+        verbose_name="Activo"
+    )
     
     # Metadata para control de caché
     ultima_sincronizacion = models.DateTimeField(
@@ -113,7 +119,8 @@ class Articulo(models.Model):
         verbose_name_plural = "Artículos Microsip"
 
     def __str__(self):
-        return f"[{self.clave}] {self.nombre}"
+        estado = " (Inactivo)" if not self.activo else ""
+        return f"[{self.clave}] {self.nombre}{estado}"
 
 
 class ClaveAuxiliar(models.Model):

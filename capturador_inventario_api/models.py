@@ -5,13 +5,16 @@ from rest_framework.authentication import TokenAuthentication
 from django.contrib.auth.models import AbstractUser, User
 from django.conf import settings
 
-# MODEL tokens
-
+# -------------------------------------------------------------------------
+# AUTHENTICATION
+# -------------------------------------------------------------------------
 class BearerTokenAuthentication(TokenAuthentication):
     keyword = "Bearer"
 
 
-# Models for Administradores, Capturadores
+# -------------------------------------------------------------------------
+# PERFILES DE USUARIO (Administradores, Capturadores)
+# -------------------------------------------------------------------------
 class Administradores(models.Model):
     id = models.BigAutoField(primary_key=True)
     user = models.OneToOneField(User, on_delete=models.CASCADE)
@@ -38,13 +41,15 @@ class Capturadores(models.Model):
         return f"Perfil del capturador {self.user.first_name} {self.user.last_name}"
 
 
-# Models for Captura, DetalleCaptura
+# -------------------------------------------------------------------------
+# CAPTURA DE INVENTARIO (App Móvil/Web)
+# -------------------------------------------------------------------------
 class Captura(models.Model):
     id = models.BigAutoField(primary_key=True)
     folio = models.CharField(max_length=50, unique=True, null=False, blank=False)
     capturador = models.ForeignKey(User, on_delete=models.PROTECT, related_name="capturas")
     fecha_captura = models.DateTimeField(auto_now_add=True)
-    # Podrías añadir un campo de estado
+    
     ESTADO_CHOICES = [('PROGRESO', 'En Progreso'), ('COMPLETADO', 'Completado')]
     estado = models.CharField(max_length=10, choices=ESTADO_CHOICES, default='PROGRESO')
 
@@ -54,14 +59,17 @@ class Captura(models.Model):
 class DetalleCaptura(models.Model):
     id = models.BigAutoField(primary_key=True)
     captura = models.ForeignKey(Captura, on_delete=models.CASCADE, related_name="detalles")
-    producto_codigo = models.CharField(max_length=100) # Este es el código que introduce el usuario (puede ser clave o código de barras)
+    producto_codigo = models.CharField(max_length=100) # Código introducido (clave o barras)
     cantidad_contada = models.PositiveIntegerField()
 
     def __str__(self):
         return f"{self.cantidad_contada} de {self.producto_codigo} en folio {self.captura.folio}"
 
 
-# Modelos para Microsip (Datos de Referencia Ligeros)
+# -------------------------------------------------------------------------
+# MODELOS DE SINCRONIZACIÓN MICROSIP
+# Estos son requeridos por 'microsip_api_sync_Articulos.py' y 'tasks.py'
+# -------------------------------------------------------------------------
 
 # Mapea ARTICULOS.SEGUIMIENTO (0: Ninguno, 1: Lote, 2: Serie)
 SEGUIMIENTO_CHOICES = [
@@ -72,29 +80,28 @@ SEGUIMIENTO_CHOICES = [
 
 class Articulo(models.Model):
     """
-    Modelo de referencia ligero para Artículos de Microsip.
-    Sirve como caché de datos maestros.
+    Caché local de los artículos de Microsip. 
+    Se actualiza automáticamente vía Background Task (Django Q).
     """
     id = models.BigAutoField(primary_key=True)
 
-    # Campo CRÍTICO: El ID interno que RenglonEntrada acepta (ARTICULOS.ARTICULO_ID)
+    # ID interno de Microsip (ARTICULO_ID). Crítico para updates.
     articulo_id_msip = models.IntegerField(
         unique=True, 
         db_index=True,
         verbose_name="ID Microsip (ARTICULO_ID)"
     )
 
-    # Clave alfanumérica visible (ARTICULOS.CLAVE o similar)
+    # Clave visible (ej. "A001")
     clave = models.CharField(
         max_length=50, 
         unique=True,
         verbose_name="Clave Alfanumérica Microsip"
     )
 
-    # Nombre/Descripción
     nombre = models.CharField(max_length=150)
 
-    # Campo CRÍTICO: Mantiene el tipo de control (0, 1, 2)
+    # Tipo de seguimiento para validaciones (Lotes/Series)
     seguimiento_tipo = models.CharField(
         max_length=1, 
         choices=SEGUIMIENTO_CHOICES, 
@@ -102,13 +109,12 @@ class Articulo(models.Model):
         verbose_name="Tipo de Seguimiento"
     )
 
-    # SOFT DELETE: Indica si el artículo sigue vigente en Microsip
+    # Soft Delete: Si se borra en Microsip, aquí solo se desactiva.
     activo = models.BooleanField(
         default=True,
         verbose_name="Activo"
     )
     
-    # Metadata para control de caché
     ultima_sincronizacion = models.DateTimeField(
         auto_now=True, 
         verbose_name="Última Sincronización"
@@ -125,8 +131,8 @@ class Articulo(models.Model):
 
 class ClaveAuxiliar(models.Model):
     """
-    Modelo para manejar claves secundarias, como códigos de barras,
-    asociadas a un artículo principal (relación 1:N).
+    Códigos de barras adicionales asociados a un Artículo.
+    Permite escanear cualquier código y encontrar el artículo principal.
     """
     id = models.BigAutoField(primary_key=True)
     
@@ -135,7 +141,6 @@ class ClaveAuxiliar(models.Model):
         verbose_name="Clave Auxiliar / Código de Barras"
     )
     
-    # Relación al artículo principal.
     articulo = models.ForeignKey(
         Articulo, 
         on_delete=models.CASCADE, 
@@ -145,8 +150,43 @@ class ClaveAuxiliar(models.Model):
     class Meta:
         verbose_name = "Clave Auxiliar"
         verbose_name_plural = "Claves Auxiliares"
-        # CRÍTICO: Asegura que el código de barras/clave sea único a nivel global.
-        unique_together = ('clave',)
+        unique_together = ('clave',) # Evita duplicados globales
 
     def __str__(self):
-        return f"Clave {self.clave} para Articulo ID {self.articulo.articulo_id_msip}"
+        return f"Clave {self.clave} -> {self.articulo.clave}"
+
+
+class BitacoraSincronizacion(models.Model):
+    """
+    Historial de ejecuciones de la tarea de sincronización.
+    Permite ver en el Admin si la tarea de Django Q tuvo éxito o falló.
+    """
+    STATUS_CHOICES = [
+        ('EN_PROCESO', 'En Proceso'),
+        ('EXITO', 'Éxito'),
+        ('ERROR', 'Error'),
+    ]
+
+    fecha_inicio = models.DateTimeField(auto_now_add=True, verbose_name="Inicio")
+    fecha_fin = models.DateTimeField(null=True, blank=True, verbose_name="Fin")
+    
+    # Métricas del proceso
+    articulos_procesados = models.IntegerField(default=0, help_text="Leídos de Microsip")
+    articulos_creados = models.IntegerField(default=0)
+    articulos_actualizados = models.IntegerField(default=0)
+    articulos_desactivados = models.IntegerField(default=0)
+    claves_creadas = models.IntegerField(default=0)
+    
+    # Logs detallados (ej. IDs que fallaron)
+    detalles_procesamiento = models.TextField(null=True, blank=True, verbose_name="Log Detalles")
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='EN_PROCESO')
+    mensaje_error = models.TextField(null=True, blank=True, verbose_name="Error Traceback")
+
+    class Meta:
+        verbose_name = "Bitácora de Sincronización"
+        verbose_name_plural = "Bitácora de Sincronizaciones"
+        ordering = ['-fecha_inicio']
+
+    def __str__(self):
+        return f"Sync {self.fecha_inicio.strftime('%Y-%m-%d %H:%M')} - {self.status}"

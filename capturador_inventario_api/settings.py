@@ -8,6 +8,7 @@ SECRET_KEY = '-_&+lsebec(whhw!%n@ww&1j=4-^j_if9x8$q778+99oz&!ms2'
 DEBUG = True  # en desarrollo
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -19,6 +20,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',       # conserva soporte de tokens de DRF
     'corsheaders',                    # librería CORS actualizada
+    'django_q',                       # <--- AGREGADO: Django Q2
     'capturador_inventario_api',
 ]
 
@@ -41,17 +43,11 @@ CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = 'capturador_inventario_api.urls'
 
-
-
-import os
-
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 STATIC_URL = "/static/"
 # STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
-# TEMPLATES[0]["DIRS"] = [os.path.join(BASE_DIR, "templates")]
-# STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]
 
 TEMPLATES = [
     {
@@ -88,13 +84,21 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# -------------------------------------------------------------------------
+# CONFIGURACIÓN REGIONAL (MÉXICO - PUEBLA)
+# -------------------------------------------------------------------------
+LANGUAGE_CODE = 'es-mx'       # Español de México
+
+# America/Mexico_City es la zona horaria correcta para el Tiempo del Centro (Puebla)
+TIME_ZONE = 'America/Mexico_City' 
+
 USE_I18N = True
 USE_L10N = True
+
+# Mantenemos esto en True. Django guardará en UTC en la BD, 
+# pero convertirá a hora de Puebla automáticamente al mostrar datos.
 USE_TZ = True
 
-STATIC_URL = '/static/'
 
 REST_FRAMEWORK = {
     'COERCE_DECIMAL_TO_STRING': False,
@@ -132,3 +136,19 @@ MICROSIP_CONFIG = {
     # Campo a usar para la búsqueda rápida en la BD de Microsip
     'CAMPO_BUSQUEDA_DEFECTO': 'CODIGO_BARRAS' 
 }
+
+# -------------------------------------------------------------------------
+# DJANGO Q2 CONFIGURATION (Background Tasks)
+# -------------------------------------------------------------------------
+Q_CLUSTER = {
+    'name': 'microsip_sync_cluster',
+    'workers': 1,  # IMPORTANTE: Mantener en 1 para evitar conflictos con la DLL de Microsip/Firebird
+    'recycle': 500, # Reinicia el worker después de 500 tareas para liberar memoria (útil con DLLs)
+    'timeout': 3600, # 1 hora de timeout (la sincronización puede ser lenta)
+    'retry': 3700, # Debe ser mayor que el timeout
+    'orm': 'default', # Usa la BD de Django como broker
+    'catch_up': False, # Si el cluster se cae, no intentar ejecutar todas las tareas perdidas de golpe
+}
+
+# Configuración para evitar el warning models.W042
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

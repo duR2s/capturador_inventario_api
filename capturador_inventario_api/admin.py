@@ -1,6 +1,12 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from capturador_inventario_api.models import Administradores, Capturadores, Captura, DetalleCaptura
+from capturador_inventario_api.models import (
+    Administradores, 
+    Capturadores, 
+    Captura, 
+    DetalleCaptura,
+    BitacoraSincronizacion
+)
 
 
 @admin.register(Administradores)
@@ -31,3 +37,40 @@ class CapturaAdmin(admin.ModelAdmin):
 class DetalleCapturaAdmin(admin.ModelAdmin):
     list_display = ('id', 'captura', 'producto_codigo', 'cantidad_contada')
     search_fields = ('producto_codigo', 'captura__folio')
+
+@admin.register(BitacoraSincronizacion)
+class BitacoraSincronizacionAdmin(admin.ModelAdmin):
+    # Agregamos los nuevos contadores al list_display
+    list_display = (
+        'fecha_inicio', 
+        'status', 
+        'articulos_procesados', 
+        'articulos_creados', 
+        'articulos_actualizados', 
+        'articulos_desactivados',
+        'claves_creadas',
+        'duracion'
+    )
+    list_filter = ('status', 'fecha_inicio')
+    # Campos de solo lectura, incluyendo los nuevos
+    readonly_fields = (
+        'fecha_inicio', 
+        'fecha_fin', 
+        'articulos_procesados', 
+        'articulos_creados', 
+        'articulos_actualizados', 
+        'articulos_desactivados',
+        'claves_creadas',
+        'status', 
+        'detalles_procesamiento',
+        'mensaje_error'
+    )
+    
+    def duracion(self, obj):
+        if obj.fecha_fin and obj.fecha_inicio:
+            return obj.fecha_fin - obj.fecha_inicio
+        return "-"
+    duracion.short_description = "Duración"
+    
+    def has_add_permission(self, request):
+        return False

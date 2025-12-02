@@ -3,7 +3,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from .views.bootstrap import VersionView
-from .views.inventario import CapturaInventarioView  # Importamos la nueva vista
+from .views.capturaInventario import CapturaInventarioView  # Importamos la nueva vista
 
 urlpatterns = [
     path("admin/", admin.site.urls),

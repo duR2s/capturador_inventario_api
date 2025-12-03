@@ -13,32 +13,37 @@ class BearerTokenAuthentication(TokenAuthentication):
 
 
 # -------------------------------------------------------------------------
-# PERFILES DE USUARIO (Administradores, Capturadores)
+# MODELO UNIFICADO DE EMPLEADO
 # -------------------------------------------------------------------------
-class Administradores(models.Model):
+class Empleado(models.Model):
+    # Opciones de "Rol" descriptivo
+    PUESTO_CHOICES = [
+        ('ADMIN', 'Administrador'),
+        ('CAPTURADOR', 'Capturador de Almacén'),
+        ('OTRO', 'Otro Empleado'),
+    ]
+
     id = models.BigAutoField(primary_key=True)
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    clave_admin = models.CharField(max_length=255,null=True, blank=True)
+    # related_name='empleado' permite acceder como: user.empleado
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='empleado')
+    
+    # Unificamos 'clave_admin' e 'id_trabajador' en un solo campo
+    clave_interna = models.CharField(max_length=255, null=True, blank=True, help_text="ID de trabajador o Clave Admin")
+    
+    # Campos comunes
     telefono = models.CharField(max_length=255, null=True, blank=True)
-    fecha_nacimiento = models.DateField(auto_now_add=False, null=True, blank=True)
+    fecha_nacimiento = models.DateField(null=True, blank=True)
     edad = models.IntegerField(null=True, blank=True)
-    creation = models.DateTimeField(auto_now_add=True, null=True, blank=True)
-    update = models.DateTimeField(null=True, blank=True)
+    
+    # Rol/Puesto
+    puesto = models.CharField(max_length=20, choices=PUESTO_CHOICES, default='CAPTURADOR')
+    
+    creation = models.DateTimeField(auto_now_add=True)
+    update = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Perfil del admin {self.user.first_name} {self.user.last_name}"
-
-class Capturadores(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    id_trabajador = models.CharField(max_length=255,null=True, blank=True)
-    telefono = models.CharField(max_length=255, null=True, blank=True)
-    edad = models.IntegerField(null=True, blank=True)
-    creation = models.DateTimeField(auto_now_add=True, null=True, blank=True)
-    update = models.DateTimeField(null=True, blank=True)
-
-    def __str__(self):
-        return f"Perfil del capturador {self.user.first_name} {self.user.last_name}"
+        username = self.user.username if self.user else "Sin Usuario"
+        return f"{username} - {self.get_puesto_display()}"
 
 
 # -------------------------------------------------------------------------
@@ -68,10 +73,8 @@ class DetalleCaptura(models.Model):
 
 # -------------------------------------------------------------------------
 # MODELOS DE SINCRONIZACIÓN MICROSIP
-# Estos son requeridos por 'microsip_api_sync_Articulos.py' y 'tasks.py'
 # -------------------------------------------------------------------------
 
-# Mapea ARTICULOS.SEGUIMIENTO (0: Ninguno, 1: Lote, 2: Serie)
 SEGUIMIENTO_CHOICES = [
     ('N', 'Ninguno (0)'),
     ('L', 'Lotes (1)'),
@@ -79,46 +82,13 @@ SEGUIMIENTO_CHOICES = [
 ]
 
 class Articulo(models.Model):
-    """
-    Caché local de los artículos de Microsip. 
-    Se actualiza automáticamente vía Background Task (Django Q).
-    """
     id = models.BigAutoField(primary_key=True)
-
-    # ID interno de Microsip (ARTICULO_ID). Crítico para updates.
-    articulo_id_msip = models.IntegerField(
-        unique=True, 
-        db_index=True,
-        verbose_name="ID Microsip (ARTICULO_ID)"
-    )
-
-    # Clave visible (ej. "A001")
-    clave = models.CharField(
-        max_length=50, 
-        unique=True,
-        verbose_name="Clave Alfanumérica Microsip"
-    )
-
+    articulo_id_msip = models.IntegerField(unique=True, db_index=True, verbose_name="ID Microsip (ARTICULO_ID)")
+    clave = models.CharField(max_length=50, unique=True, verbose_name="Clave Alfanumérica Microsip")
     nombre = models.CharField(max_length=150)
-
-    # Tipo de seguimiento para validaciones (Lotes/Series)
-    seguimiento_tipo = models.CharField(
-        max_length=1, 
-        choices=SEGUIMIENTO_CHOICES, 
-        default='N',
-        verbose_name="Tipo de Seguimiento"
-    )
-
-    # Soft Delete: Si se borra en Microsip, aquí solo se desactiva.
-    activo = models.BooleanField(
-        default=True,
-        verbose_name="Activo"
-    )
-    
-    ultima_sincronizacion = models.DateTimeField(
-        auto_now=True, 
-        verbose_name="Última Sincronización"
-    )
+    seguimiento_tipo = models.CharField(max_length=1, choices=SEGUIMIENTO_CHOICES, default='N', verbose_name="Tipo de Seguimiento")
+    activo = models.BooleanField(default=True, verbose_name="Activo")
+    ultima_sincronizacion = models.DateTimeField(auto_now=True, verbose_name="Última Sincronización")
 
     class Meta:
         verbose_name = "Artículo Microsip"
@@ -128,39 +98,20 @@ class Articulo(models.Model):
         estado = " (Inactivo)" if not self.activo else ""
         return f"[{self.clave}] {self.nombre}{estado}"
 
-
 class ClaveAuxiliar(models.Model):
-    """
-    Códigos de barras adicionales asociados a un Artículo.
-    Permite escanear cualquier código y encontrar el artículo principal.
-    """
     id = models.BigAutoField(primary_key=True)
-    
-    clave = models.CharField(
-        max_length=50, 
-        verbose_name="Clave Auxiliar / Código de Barras"
-    )
-    
-    articulo = models.ForeignKey(
-        Articulo, 
-        on_delete=models.CASCADE, 
-        related_name='claves_auxiliares'
-    )
+    clave = models.CharField(max_length=50, verbose_name="Clave Auxiliar / Código de Barras")
+    articulo = models.ForeignKey(Articulo, on_delete=models.CASCADE, related_name='claves_auxiliares')
     
     class Meta:
         verbose_name = "Clave Auxiliar"
         verbose_name_plural = "Claves Auxiliares"
-        unique_together = ('clave',) # Evita duplicados globales
+        unique_together = ('clave',)
 
     def __str__(self):
         return f"Clave {self.clave} -> {self.articulo.clave}"
 
-
 class BitacoraSincronizacion(models.Model):
-    """
-    Historial de ejecuciones de la tarea de sincronización.
-    Permite ver en el Admin si la tarea de Django Q tuvo éxito o falló.
-    """
     STATUS_CHOICES = [
         ('EN_PROCESO', 'En Proceso'),
         ('EXITO', 'Éxito'),
@@ -169,17 +120,12 @@ class BitacoraSincronizacion(models.Model):
 
     fecha_inicio = models.DateTimeField(auto_now_add=True, verbose_name="Inicio")
     fecha_fin = models.DateTimeField(null=True, blank=True, verbose_name="Fin")
-    
-    # Métricas del proceso
     articulos_procesados = models.IntegerField(default=0, help_text="Leídos de Microsip")
     articulos_creados = models.IntegerField(default=0)
     articulos_actualizados = models.IntegerField(default=0)
     articulos_desactivados = models.IntegerField(default=0)
     claves_creadas = models.IntegerField(default=0)
-    
-    # Logs detallados (ej. IDs que fallaron)
     detalles_procesamiento = models.TextField(null=True, blank=True, verbose_name="Log Detalles")
-    
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='EN_PROCESO')
     mensaje_error = models.TextField(null=True, blank=True, verbose_name="Error Traceback")
 

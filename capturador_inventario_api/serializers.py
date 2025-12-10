@@ -52,10 +52,29 @@ class ClaveAuxiliarSerializer(serializers.ModelSerializer):
 # --- 3. Serializadores de Captura y Detalle ---
 
 class DetalleCapturaSerializer(serializers.ModelSerializer):
+    # Nombre del artículo para mostrar en respuesta (readonly)
+    articulo_nombre = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = DetalleCaptura
-        fields = ['id', 'producto_codigo', 'cantidad_contada'] 
-        read_only_fields = ['id']
+        fields = ['id', 'captura', 'producto_codigo', 'cantidad_contada', 'articulo_nombre'] 
+        read_only_fields = ['id', 'articulo_nombre']
+        # 'captura' se puede enviar, pero si se usa en bulk sync por URL, se inyectará en el save()
+
+    def get_articulo_nombre(self, obj):
+        # Intenta buscar el nombre para dar feedback visual inmediato
+        try:
+            # Primero busca si es clave directa de Articulo
+            art = Articulo.objects.filter(clave=obj.producto_codigo).first()
+            if art: return art.nombre
+            
+            # Si no, busca en auxiliares
+            aux = ClaveAuxiliar.objects.filter(clave=obj.producto_codigo).select_related('articulo').first()
+            if aux: return aux.articulo.nombre
+            
+            return "Producto Desconocido"
+        except:
+            return "N/A"
 
 
 class CapturaSerializer(serializers.ModelSerializer):
@@ -86,23 +105,10 @@ class CapturaSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         detalles = data.get('detalles', [])
-        codigos_enviados = {item['producto_codigo'] for item in detalles}
-        
-        if not codigos_enviados:
+        # Nota: En sincronización masiva offline, la validación estricta de existencia
+        # podría bloquear todo el lote. Aquí validamos integridad básica.
+        if not detalles:
             raise serializers.ValidationError({"detalles": "La captura debe tener al menos un detalle."})
-
-        codigos_encontrados = set(
-            ClaveAuxiliar.objects.filter(clave__in=codigos_enviados).values_list('clave', flat=True)
-        )
-
-        codigos_inexistentes = codigos_enviados - codigos_encontrados
-
-        if codigos_inexistentes:
-            raise serializers.ValidationError({
-                "error_integridad": "Códigos de producto no válidos o no encontrados en catálogo.",
-                "codigos_fallidos": list(codigos_inexistentes)
-            })
-
         return data
 
     def create(self, validated_data):

@@ -17,11 +17,16 @@ def task_sincronizar_inventario():
         # Ejecutamos la lógica de sincronización
         resultado = service.sincronizar_articulos()
         
+        # Obtenemos los resultados de forma segura
+        creados = resultado.get('articulos_creados', 0)
+        actualizados = resultado.get('articulos_actualizados', 0)
+        inventarios = resultado.get('inventarios_procesados', 0)
+        
         mensaje = (
             f"Tarea finalizada con éxito. "
-            f"Creados: {resultado.get('articulos_creados')}, "
-            f"Actualizados: {resultado.get('articulos_actualizados')}, "
-            f"Desactivados: {resultado.get('articulos_desactivados')}."
+            f"Arts Creados: {creados}, "
+            f"Arts Actualizados: {actualizados}, "
+            f"Inventarios Sync: {inventarios}."
         )
         print(f"[{timezone.now()}] {mensaje}")
         return mensaje
@@ -29,5 +34,5 @@ def task_sincronizar_inventario():
     except Exception as e:
         error_msg = f"Error crítico en tarea de sincronización: {str(e)}"
         print(f"[{timezone.now()}] {error_msg}")
-        # Relanzamos la excepción para que Django-Q marque la tarea como 'Failed'
+        # Relanzamos la excepción para que Django-Q marque la tarea como Fallida y se pueda reintentar o auditar
         raise e

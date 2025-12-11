@@ -1,308 +1,446 @@
-from datetime import datetime
+from datetime import datetime, date
 import traceback
+import fdb  # REQUISITO: pip install fdb
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.conf import settings # Para leer la config de conexión
 
-from capturador_inventario_api.models import Articulo, ClaveAuxiliar, BitacoraSincronizacion
-# Corregido: Quitamos SEGUIMIENTO_MAP_OUT del import porque lo definiremos abajo
-from .microsip_api_connection import MicrosipConnectionBase, SEGUIMIENTO_MAP_IN, microsip_connect, MicrosipAPIError 
+# Importamos tus modelos
+from capturador_inventario_api.models import (
+    Articulo, 
+    ClaveAuxiliar, 
+    BitacoraSincronizacion, 
+    Almacen, 
+    InventarioArticulo
+)
+from .microsip_api_connection import MicrosipConnectionBase, microsip_connect, MicrosipAPIError 
 
-# Mapa inverso: de Char (Django) a Integer esperado por la DLL (Microsip)
-# RESTAURADO: Definición local para evitar errores de importación
+# Mapa para la DLL (cuando escribamos en el futuro)
 SEGUIMIENTO_MAP_OUT = {
     'N': 0,
     'L': 1,
     'S': 2,
 }
 
-
 class InventariosService(MicrosipConnectionBase): 
     """
-    Clase de servicio que contiene la lógica de negocio de Django (ORM)
-    y orquesta las llamadas de bajo nivel a la DLL para el módulo de Inventarios.
+    Servicio híbrido:
+    - Usa SQL Directo (fdb) para LEER masivamente (Sync rápido).
+    - Usa DLL Microsip para ESCRIBIR transacciones (Validación de negocio).
     """
     
+    # -------------------------------------------------------------------------
+    # GESTIÓN DE CONEXIÓN SQL DIRECTA (SOLO LECTURA)
+    # -------------------------------------------------------------------------
+    
+    def _get_db_config(self):
+        """Intenta obtener la configuración de BD desde settings.py"""
+        if hasattr(settings, 'MICROSIP_CONFIG'):
+            return settings.MICROSIP_CONFIG
+        
+        if hasattr(settings, 'DB_FILE'):
+            return {
+                'DB_FILE': settings.DB_FILE,
+                'USER': getattr(settings, 'USER', 'SYSDBA'),
+                'PASSWORD': getattr(settings, 'PASSWORD', 'masterkey'),
+                'CHARSET': 'NONE' 
+            }
+        raise ValueError("No se encontró configuración de Microsip en settings.py")
+
+    def _ejecutar_query_firebird(self, sql, params=None):
+        conf = self._get_db_config()
+        
+        dsn = conf['DB_FILE']
+        user = conf['USER']
+        password = conf['PASSWORD']
+        
+        con = fdb.connect(
+            dsn=dsn, 
+            user=user, 
+            password=password,
+            charset='NONE' 
+        )
+        
+        cursor = con.cursor()
+        try:
+            cursor.execute(sql, params or ())
+            
+            # Verificar si la consulta retorna resultados
+            if cursor.description:
+                columns = [col[0] for col in cursor.description]
+                rows = cursor.fetchall()
+                result = []
+                for row in rows:
+                    row_dict = {}
+                    for i, col_name in enumerate(columns):
+                        val = row[i]
+                        if isinstance(val, str):
+                            val = val.strip()
+                        row_dict[col_name] = val
+                    result.append(row_dict)
+                return result
+            else:
+                return [] # Para sentencias que no retornan nada (aunque execute block returns sí retorna)
+        finally:
+            cursor.close()
+            con.close()
+
+    # -------------------------------------------------------------------------
+    # 1. EXTRACCIÓN DE DATOS MAESTROS
+    # -------------------------------------------------------------------------
+
+    def extraer_articulos_y_claves_msip(self):
+        print("-> 1. Extrayendo Artículos y Claves vía SQL Directo...")
+        
+        sql = """
+            SELECT 
+                A.ARTICULO_ID,
+                A.NOMBRE,
+                CA.CLAVE_ARTICULO,
+                CA.ROL_CLAVE_ART_ID, 
+                A.SEGUIMIENTO        
+            FROM ARTICULOS A
+            JOIN CLAVES_ARTICULOS CA ON CA.ARTICULO_ID = A.ARTICULO_ID
+            WHERE A.ESTATUS = 'A'
+        """
+        
+        rows = self._ejecutar_query_firebird(sql)
+        
+        temp_articulos = {}
+        ids_activos = []
+
+        for row in rows:
+            art_id = row['ARTICULO_ID']
+            nombre = row['NOMBRE']
+            clave = row['CLAVE_ARTICULO']
+            rol = row['ROL_CLAVE_ART_ID']
+            
+            seguimiento = row.get('SEGUIMIENTO', 'N')
+            if not seguimiento: seguimiento = 'N'
+            seguimiento = seguimiento.strip()
+
+            if art_id not in temp_articulos:
+                ids_activos.append(art_id)
+                temp_articulos[art_id] = {
+                    'nombre': nombre,
+                    'seguimiento_tipo': seguimiento,
+                    'claves': []
+                }
+            
+            if clave:
+                temp_articulos[art_id]['claves'].append((clave, rol))
+
+        articulos_microsip = {} 
+        claves_por_articulo = {} 
+
+        for art_id, datos in temp_articulos.items():
+            all_keys = datos['claves']
+            clave_principal = None
+            claves_auxiliares = []
+            
+            idx_principal = next((i for i, (k, r) in enumerate(all_keys) if r == 17), None)
+            
+            if idx_principal is not None:
+                clave_principal = all_keys[idx_principal][0]
+                for i, (k, r) in enumerate(all_keys):
+                    if i != idx_principal:
+                        claves_auxiliares.append(k)
+            elif all_keys:
+                clave_principal = all_keys[0][0]
+                for i in range(1, len(all_keys)):
+                    claves_auxiliares.append(all_keys[i][0])
+            else:
+                clave_principal = f"S/C-{art_id}"
+
+            articulos_microsip[art_id] = {
+                'nombre': datos['nombre'],
+                'seguimiento_tipo': datos['seguimiento_tipo'],
+                'clave': clave_principal
+            }
+            claves_por_articulo[art_id] = claves_auxiliares
+
+        print(f"-> Extracción finalizada: {len(articulos_microsip)} artículos activos procesados.")
+        return articulos_microsip, claves_por_articulo, ids_activos
+
+    # -------------------------------------------------------------------------
+    # 2. SINCRONIZACIÓN DE ALMACENES
+    # -------------------------------------------------------------------------
+
+    def _sincronizar_almacenes(self):
+        print("-> 2. Sincronizando Almacenes...")
+        sql = "SELECT ALMACEN_ID, NOMBRE FROM ALMACENES"
+        almacenes_msip = self._ejecutar_query_firebird(sql)
+        
+        creados = 0
+        actualizados = 0
+        ids_activos = []
+
+        for row in almacenes_msip:
+            msip_id = row['ALMACEN_ID']
+            nombre = row['NOMBRE']
+            ids_activos.append(msip_id)
+
+            obj, created = Almacen.objects.update_or_create(
+                almacen_id_msip=msip_id,
+                defaults={'nombre': nombre}
+            )
+            if created: creados += 1
+            else: actualizados += 1
+        
+        Almacen.objects.exclude(almacen_id_msip__in=ids_activos).update(activo_web=False)
+        return creados
+
+    # -------------------------------------------------------------------------
+    # 3. SINCRONIZACIÓN DE ARTÍCULOS
+    # -------------------------------------------------------------------------
+
     def _actualizar_articulos_django(self, articulos_microsip, log_buffer):
-        """
-        Carga de Artículos Principales: Inserta/Actualiza la tabla Articulo en Django.
-        Retorna la tupla (creados, actualizados).
-        AÑADIDO: Recibe log_buffer para acumular errores en lugar de solo imprimir.
-        """
         articulos_a_crear = []
         articulos_a_actualizar = []
         
-        print("-> 3. Procesando artículos principales en Django...")
-        print("   Iniciando preparación de objetos para la base de datos local...") 
+        print("-> 3. Procesando artículos en Django...")
         
+        articulos_existentes = {a.articulo_id_msip: a for a in Articulo.objects.all()}
+        
+        claves_registradas = {}
+        for a in Articulo.objects.all():
+            key_norm = a.clave.strip().upper()
+            claves_registradas[key_norm] = a.articulo_id_msip
+
         for msip_id, data in articulos_microsip.items():
-            try:
-                # Intentamos obtener el artículo existente
-                articulo = Articulo.objects.get(articulo_id_msip=msip_id)
+            clave_original = data['clave'].strip()
+            clave_check = clave_original.upper()
+            
+            if clave_check in claves_registradas:
+                dueno_id = claves_registradas[clave_check]
                 
-                # Verificamos cambios
-                if (articulo.clave != data['clave'] or 
+                if dueno_id != msip_id:
+                    clave_candidata = f"{clave_original}_DUP_{msip_id}"
+                    msg = f"⚠ AVISO: Clave duplicada '{clave_original}' (vs ID {dueno_id}). Se renombró a '{clave_candidata}' para el ID {msip_id}."
+                    print(msg)
+                    log_buffer.append(msg)
+                    
+                    clave_original = clave_candidata
+                    clave_check = clave_candidata.upper()
+
+            claves_registradas[clave_check] = msip_id
+            
+            articulo = articulos_existentes.get(msip_id)
+            if articulo:
+                clave_final = clave_original.upper()
+                
+                if (articulo.clave != clave_final or 
                     articulo.nombre != data['nombre'] or
                     articulo.seguimiento_tipo != data['seguimiento_tipo'] or
                     not articulo.activo):
-
-                    articulo.clave = data['clave']
+                    
+                    articulo.clave = clave_final
                     articulo.nombre = data['nombre']
                     articulo.seguimiento_tipo = data['seguimiento_tipo']
-                    articulo.activo = True 
+                    articulo.activo = True
                     articulos_a_actualizar.append(articulo)
-                
-            except Articulo.DoesNotExist:
-                # Si no existe, agregar a lista de creación
+            else:
+                clave_final = clave_original.upper()
                 articulos_a_crear.append(Articulo(
                     articulo_id_msip=msip_id,
-                    clave=data['clave'],
+                    clave=clave_final,
                     nombre=data['nombre'],
                     seguimiento_tipo=data['seguimiento_tipo'],
-                    activo=True 
+                    activo=True
                 ))
-            except IntegrityError as e:
-                # CAPTURA DE ERROR: Lo imprimimos Y lo guardamos en la bitácora
-                msg = f"Advertencia (Integridad): Error al procesar artículo ID {msip_id}: {e}"
-                print(msg)
-                log_buffer.append(msg)
         
         BATCH_SIZE = 1000
-
         if articulos_a_crear:
-            print(f"   Insertando {len(articulos_a_crear)} nuevos artículos en lotes de {BATCH_SIZE}...")
-            Articulo.objects.bulk_create(articulos_a_crear, batch_size=BATCH_SIZE, ignore_conflicts=True)
+            Articulo.objects.bulk_create(articulos_a_crear, batch_size=BATCH_SIZE)
         
         if articulos_a_actualizar:
-            print(f"   Actualizando {len(articulos_a_actualizar)} artículos existentes en lotes de {BATCH_SIZE}...")
             Articulo.objects.bulk_update(articulos_a_actualizar, ['clave', 'nombre', 'seguimiento_tipo', 'activo'], batch_size=BATCH_SIZE)
 
-        print(f"-> Artículos Django: Creados {len(articulos_a_crear)}, Actualizados {len(articulos_a_actualizar)}.")
-        
         return len(articulos_a_crear), len(articulos_a_actualizar)
 
-
     def _limpiar_articulos_obsoletos(self, ids_microsip_activos):
-        """
-        Limpieza Obsoleta: Desactiva (Soft Delete) artículos de Django que ya no están activos en Microsip.
-        """
-        print("-> 4. Limpiando artículos obsoletos (Soft Delete)...")
-        
-        if not ids_microsip_activos:
-            return 0
-            
-        total_desactivados = Articulo.objects.filter(activo=True).exclude(articulo_id_msip__in=ids_microsip_activos).update(activo=False)
-        
-        print(f"-> Artículos obsoletos desactivados: {total_desactivados}")
-        return total_desactivados
+        if not ids_microsip_activos: return 0
+        return Articulo.objects.filter(activo=True).exclude(articulo_id_msip__in=ids_microsip_activos).update(activo=False)
 
+    # -------------------------------------------------------------------------
+    # 5. SINCRONIZACIÓN DE CLAVES AUXILIARES
+    # -------------------------------------------------------------------------
 
     def _sincronizar_claves_auxiliares(self, ids_microsip_activos, claves_por_articulo):
-        """
-        Sincronización de Claves: Borra y recrea las claves auxiliares.
-        """
         print("-> 5. Sincronizando claves auxiliares...")
-
-        # 1. Limpiar
         if ids_microsip_activos:
-            claves_a_limpiar = ClaveAuxiliar.objects.filter(articulo__articulo_id_msip__in=ids_microsip_activos)
-            total_limpiadas, _ = claves_a_limpiar.delete()
-            print(f"-> Claves auxiliares limpiadas: {total_limpiadas}")
+             pks_activos = Articulo.objects.filter(articulo_id_msip__in=ids_microsip_activos).values_list('pk', flat=True)
+             ClaveAuxiliar.objects.filter(articulo_id__in=pks_activos).delete()
 
-
-        # 2. Mapeo rápido de ID Microsip -> ID Django (PK)
-        articulos_map = {
-            a.articulo_id_msip: a.pk 
-            for a in Articulo.objects.filter(articulo_id_msip__in=ids_microsip_activos)
-        }
+        articulos_map = {a.articulo_id_msip: a.pk for a in Articulo.objects.filter(articulo_id_msip__in=ids_microsip_activos)}
         
-        # 3. Preparar objetos
         claves_a_crear = []
         for msip_id, claves in claves_por_articulo.items():
             if msip_id in articulos_map:
-                articulo_pk = articulos_map[msip_id]
+                pk = articulos_map[msip_id]
+                
+                claves_procesadas_para_este_articulo = set()
+                
                 for clave in claves:
-                    claves_a_crear.append(ClaveAuxiliar(
-                        articulo_id=articulo_pk,
-                        clave=clave
-                    ))
+                    clave_clean = clave.strip().upper()
+                    if clave_clean not in claves_procesadas_para_este_articulo:
+                        claves_a_crear.append(ClaveAuxiliar(articulo_id=pk, clave=clave_clean))
+                        claves_procesadas_para_este_articulo.add(clave_clean)
 
-        BATCH_SIZE = 2000
-
-        # 4. Ejecutar creación
         if claves_a_crear:
-            print(f"   Insertando {len(claves_a_crear)} claves auxiliares en lotes de {BATCH_SIZE}...")
-            ClaveAuxiliar.objects.bulk_create(claves_a_crear, batch_size=BATCH_SIZE, ignore_conflicts=True)
-        
-        print(f"-> Claves auxiliares creadas: {len(claves_a_crear)}")
+            ClaveAuxiliar.objects.bulk_create(claves_a_crear, batch_size=2000)
+            
         return len(claves_a_crear)
 
+    # -------------------------------------------------------------------------
+    # 6. SINCRONIZACIÓN DE INVENTARIO
+    # -------------------------------------------------------------------------
+
+    def _sincronizar_existencias_y_localizaciones(self):
+        print("-> 6. Sincronizando Existencias usando procedimiento CALC_EXIS_ARTALM...")
+
+        # USAMOS EXECUTE BLOCK PARA LLAMAR AL PROCEDIMIENTO ALMACENADO DE FORMA MASIVA
+        # Esto soluciona que el procedimiento sea 'Executable' y no 'Selectable'.
+        # Iteramos en el servidor Firebird, no en Python.
+        
+        sql_block = """
+            EXECUTE BLOCK (P_FECHA DATE = ?) RETURNS (
+                ARTICULO_ID INTEGER,
+                ALMACEN_ID INTEGER,
+                LOCALIZACION VARCHAR(50),
+                STOCK_MIN NUMERIC(18,5),
+                STOCK_MAX NUMERIC(18,5),
+                PUNTO_REORDEN NUMERIC(18,5),
+                EXISTENCIA NUMERIC(18,5)
+            ) AS
+            DECLARE VARIABLE V_COSTO NUMERIC(15,2);
+            BEGIN
+              FOR SELECT 
+                    A.ARTICULO_ID, 
+                    AL.ALMACEN_ID,
+                    COALESCE(NA.LOCALIZACION, ''),
+                    COALESCE(NA.INVENTARIO_MINIMO, 0),
+                    COALESCE(NA.INVENTARIO_MAXIMO, 0),
+                    COALESCE(NA.PUNTO_REORDEN, 0)
+                  FROM ARTICULOS A
+                  JOIN ALMACENES AL ON 1=1
+                  LEFT JOIN NIVELES_ARTICULOS NA 
+                    ON NA.ARTICULO_ID = A.ARTICULO_ID AND NA.ALMACEN_ID = AL.ALMACEN_ID
+                  WHERE A.ESTATUS = 'A'
+                  INTO :ARTICULO_ID, :ALMACEN_ID, :LOCALIZACION, :STOCK_MIN, :STOCK_MAX, :PUNTO_REORDEN
+              DO
+              BEGIN
+                  /* LLAMADA AL PROCEDIMIENTO PROPORCIONADO POR EL USUARIO */
+                  EXECUTE PROCEDURE CALC_EXIS_ARTALM(:ARTICULO_ID, :ALMACEN_ID, :P_FECHA)
+                  RETURNING_VALUES :EXISTENCIA, :V_COSTO;
+                  
+                  SUSPEND;
+              END
+            END
+        """
+        
+        # Pasamos la fecha actual
+        fecha_corte = date.today()
+        
+        datos_msip = self._ejecutar_query_firebird(sql_block, (fecha_corte,))
+        
+        map_articulos = {a.articulo_id_msip: a.pk for a in Articulo.objects.all()}
+        map_almacenes = {al.almacen_id_msip: al.pk for al in Almacen.objects.all()}
+        
+        inventario_actual = {
+            (inv.articulo_id, inv.almacen_id): inv 
+            for inv in InventarioArticulo.objects.all()
+        }
+
+        updates = []
+        creates = []
+
+        for row in datos_msip:
+            msip_art_id = row['ARTICULO_ID']
+            msip_alm_id = row['ALMACEN_ID']
+
+            django_art_id = map_articulos.get(msip_art_id)
+            django_alm_id = map_almacenes.get(msip_alm_id)
+
+            if not django_art_id or not django_alm_id: continue
+
+            inv_obj = inventario_actual.get((django_art_id, django_alm_id))
+            
+            nueva_exist = row['EXISTENCIA']
+            nueva_loc = row['LOCALIZACION']
+            
+            if inv_obj:
+                loc_a_guardar = inv_obj.localizacion
+                if not inv_obj.pendiente_sincronizar_msip:
+                    loc_a_guardar = nueva_loc
+                
+                if (inv_obj.existencia != nueva_exist or 
+                    inv_obj.localizacion != loc_a_guardar or
+                    inv_obj.stock_minimo != row['STOCK_MIN']):
+                    
+                    inv_obj.existencia = nueva_exist
+                    inv_obj.localizacion = loc_a_guardar
+                    inv_obj.stock_minimo = row['STOCK_MIN']
+                    inv_obj.stock_maximo = row['STOCK_MAX']
+                    inv_obj.punto_reorden = row['PUNTO_REORDEN']
+                    updates.append(inv_obj)
+            else:
+                creates.append(InventarioArticulo(
+                    articulo_id=django_art_id,
+                    almacen_id=django_alm_id,
+                    existencia=nueva_exist,
+                    localizacion=nueva_loc,
+                    stock_minimo=row['STOCK_MIN'],
+                    stock_maximo=row['STOCK_MAX'],
+                    punto_reorden=row['PUNTO_REORDEN']
+                ))
+
+        if creates: InventarioArticulo.objects.bulk_create(creates, batch_size=2000)
+        if updates: InventarioArticulo.objects.bulk_update(updates, ['existencia', 'localizacion', 'stock_minimo', 'stock_maximo', 'punto_reorden'], batch_size=2000)
+        
+        return len(creates) + len(updates)
+
+    # -------------------------------------------------------------------------
+    # ORQUESTADOR PRINCIPAL
+    # -------------------------------------------------------------------------
 
     @microsip_connect
     def sincronizar_articulos(self):
-        """
-        Punto de entrada principal para el job de sincronización.
-        AHORA CON OBSERVABILIDAD DETALLADA.
-        """
-        print("--- INICIANDO ORQUESTADOR DE SINCRONIZACIÓN DE CATÁLOGO (Inventarios) ---")
-        
-        # 1. INICIO DE BITÁCORA
+        print("--- INICIANDO ORQUESTADOR DE SINCRONIZACIÓN (MODO HÍBRIDO) ---")
         bitacora = BitacoraSincronizacion.objects.create(status='EN_PROCESO')
-        
-        # Buffer para guardar logs específicos (ej. artículos problemáticos)
         log_buffer = []
 
         try:
-            # 2. Extracción
-            articulos_microsip, claves_por_articulo, ids_microsip_activos = self.extraer_articulos_y_claves_msip()
-            
-            bitacora.articulos_procesados = len(articulos_microsip)
-            
-            # 3. Transacción de Django
-            with transaction.atomic():
-                # Pasamos log_buffer para capturar errores individuales sin detener el proceso masivo
-                creados, actualizados = self._actualizar_articulos_django(articulos_microsip, log_buffer)
-                
-                desactivados_articulos = self._limpiar_articulos_obsoletos(ids_microsip_activos)
-                
-                claves_creadas = self._sincronizar_claves_auxiliares(ids_microsip_activos, claves_por_articulo)
+            articulos_msip, claves_msip, ids_activos = self.extraer_articulos_y_claves_msip()
+            bitacora.articulos_procesados = len(articulos_msip)
 
-            # 4. ÉXITO DE BITÁCORA: Guardamos contadores extendidos y logs
+            with transaction.atomic():
+                self._sincronizar_almacenes()
+                creados, actualizados = self._actualizar_articulos_django(articulos_msip, log_buffer)
+                desactivados = self._limpiar_articulos_obsoletos(ids_activos)
+                claves_creadas = self._sincronizar_claves_auxiliares(ids_activos, claves_msip)
+                inventarios_proc = self._sincronizar_existencias_y_localizaciones()
+
             bitacora.articulos_creados = creados
             bitacora.articulos_actualizados = actualizados
-            bitacora.articulos_desactivados = desactivados_articulos # NUEVO
-            bitacora.claves_creadas = claves_creadas # NUEVO
-            
-            # Guardamos los mensajes acumulados (si los hay)
-            if log_buffer:
-                bitacora.detalles_procesamiento = "\n".join(log_buffer)
-            
+            bitacora.articulos_desactivados = desactivados
+            bitacora.detalles = f"Sync OK. Inv: {inventarios_proc}. Claves: {claves_creadas}"
             bitacora.status = 'EXITO'
             bitacora.fecha_fin = timezone.now()
             bitacora.save()
 
-            print("--- ORQUESTACIÓN FINALIZADA CON ÉXITO ---")
+            print("--- SINCRONIZACIÓN EXITOSA ---")
             return {
                 "articulos_creados": creados,
                 "articulos_actualizados": actualizados,
-                "articulos_desactivados": desactivados_articulos, 
-                "claves_creadas": claves_creadas,
+                "inventarios_procesados": inventarios_proc
             }
 
         except Exception as e:
-            # 5. ERROR FATAL: Guardamos el traceback y lo que hayamos acumulado en log_buffer
             error_msg = traceback.format_exc()
-            print(f"!!! ERROR FATAL EN SINCRONIZACIÓN !!!: {e}")
-            
+            print(f"!!! ERROR FATAL !!!: {e}")
             bitacora.status = 'ERROR'
             bitacora.mensaje_error = error_msg
-            
-            # Si hubo logs parciales antes del crash, los guardamos también
-            if log_buffer:
-                bitacora.detalles_procesamiento = "\n".join(log_buffer)
-                
             bitacora.fecha_fin = timezone.now()
             bitacora.save()
-            
             raise e
-
-
-    @microsip_connect
-    def registrar_entrada(self, encabezado_data, renglones_data):
-        """
-        Implementa la lógica de negocio para validar la caché y registrar la Entrada en Microsip.
-        """
-        
-        # 1. Validar la caché (traducir claves auxiliares a IDs de Microsip y tipos de seguimiento)
-        renglones_msip = []
-        for renglon in renglones_data:
-            clave_busqueda = renglon['ArticuloId']
-            
-            try:
-                # Búsqueda en el modelo ClaveAuxiliar, que usa el índice por 'clave'
-                clave_aux = ClaveAuxiliar.objects.select_related('articulo').get(clave=clave_busqueda)
-                articulo_cache = clave_aux.articulo
-
-                # VALIDACIÓN ADICIONAL: ¿Permitimos usar artículos inactivos?
-                if not articulo_cache.activo:
-                     raise ValueError(f"El artículo '{articulo_cache.nombre}' está marcado como INACTIVO/OBSOLETO.")
-                
-                articulo_id_final = articulo_cache.articulo_id_msip
-                articulo_nombre = articulo_cache.nombre
-                # Mapear el char de Django ('L', 'S', 'N') al Integer de la DLL (1, 2, 0)
-                seguimiento = SEGUIMIENTO_MAP_OUT.get(articulo_cache.seguimiento_tipo, 0) 
-                
-                # Crear el renglón para pasar a la DLL, incluyendo los datos de seguimiento
-                renglones_msip.append({
-                    'ArticuloId': articulo_id_final, 
-                    'Unidades': renglon['Unidades'],
-                    'CostoUnitario': renglon.get('CostoUnitario', 0.0),
-                    'CostoTotal': renglon.get('CostoTotal', 0.0),
-                    'Seguimiento': seguimiento, # Agregamos el tipo de seguimiento
-                    'Nombre': articulo_nombre, # Agregamos el nombre para logs
-                    'Lotes': renglon.get('Lotes', []), 
-                    'Series': renglon.get('Series', []), 
-                })
-                
-            except ClaveAuxiliar.DoesNotExist:
-                raise ValueError(f"Artículo con clave {clave_busqueda} no encontrado en caché local. Sincronice el catálogo.")
-
-        # 2. Llamar a la función de la base para registrar el documento en Microsip
-        return self.registrar_entrada_msip(encabezado_data, renglones_msip)
-
-# --- ----------------------------------------------------------- ---
-# --- FUNCIÓN DE PRUEBA DE SINCRONIZACIÓN (Para run_test.py) ---
-# --- ----------------------------------------------------------- ---
-
-def prueba_1_sincronizacion():
-    """
-    Función de prueba para el flujo de sincronización del catálogo.
-    Esta función NO debe ser decorada, ya que la conexión es manejada por el método interno.
-    """
-    print("=============================================")
-    print("🚀 INICIANDO PRUEBA 1: CONEXIÓN Y SINCRONIZACIÓN")
-    print("=============================================")
-    
-    # Inicializamos el servicio (lee la config de settings.py)
-    service = InventariosService()
-    
-    try:
-        # Aquí NO llamamos a .conectar(), se hace automáticamente por el decorador @microsip_connect
-        # en el método .sincronizar_articulos()
-        
-        # --- Prueba de Sincronización ---
-        print("\n--- INICIANDO PRUEBA DE SINCRONIZACIÓN DE CATÁLOGO ---")
-        
-        # La llamada a sincronizar_articulos inicia la conexión, ejecuta todo y la cierra al finalizar.
-        resultados = service.sincronizar_articulos()
-        
-        print("--- PRUEBA DE SINCRONIZACIÓN FINALIZADA ---")
-        print(f"Resumen: Creados={resultados['articulos_creados']}, Actualizados={resultados['articulos_actualizados']}, Desactivados={resultados['articulos_desactivados']}, Claves Creadas={resultados['claves_creadas']}")
-
-        # Prueba de consulta de seguridad post-sincronización
-        try:
-            # Usamos una clave que sepamos que existe o tomamos la primera que encontremos
-            articulo_test = Articulo.objects.filter(activo=True).first()
-            if articulo_test:
-                print(f"\n✅ Verificación de caché: Se encontró artículo ACTIVO '{articulo_test.nombre}' (ID: {articulo_test.articulo_id_msip})")
-            else:
-                print("\n⚠️ Advertencia: La sincronización terminó pero no hay artículos activos.")
-        except Exception as db_e:
-            print(f"\n❌ Error al consultar la base de datos local: {db_e}")
-            
-    except MicrosipAPIError as e:
-        print(f"\n❌ FALLO DE PRUEBA: Error específico de la API de Microsip.")
-        print(f"    Causa del error: {e}")
-        print(f"    Detalles: {e.details}")
-        return False
-        
-    except Exception as e:
-        print(f"\n❌ FALLO DE PRUEBA: Error durante el ciclo de vida o consulta.")
-        print(f"    Causa del error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-        
-    finally:
-        # No se necesita desconectar aquí, el decorador se encargó de ello.
-        print("=============================================")
-        return True

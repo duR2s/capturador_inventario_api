@@ -69,6 +69,10 @@ class MicrosipConnectionBase:
     """
     Clase base que gestiona la conexión de bajo nivel, los handles y la comunicación
     con la ApiMicrosip.dll.
+    
+    NOTA: Las funciones de LECTURA masiva han sido eliminadas de aquí porque
+    ahora se realizan vía SQL Directo (FDB) en los servicios de Sync.
+    Esta clase se conserva para Gestión de Conexión y Escritura (Transactions).
     """
     def __init__(self):
         try:
@@ -151,235 +155,6 @@ class MicrosipConnectionBase:
                 error_message = error_buffer.value.decode('latin-1', errors='ignore')
                 print(f"ADVERTENCIA: Fallo al desconectar la API. Mensaje: {error_message}")
     
-    def _obtener_conteo_articulos_activos(self):
-        """Ejecuta SELECT COUNT(*) y retorna el número de filas activas."""
-        sql_handle_count = microsip_dll.NewSql(self.trn_handle)
-        count_val = c_int(0)
-        total_esperado = 0
-        
-        query_count = "SELECT COUNT(*) C FROM ARTICULOS WHERE ESTATUS = 'A'"
-        
-        try:
-            result = microsip_dll.SqlQry(sql_handle_count, query_count.encode('latin-1'))
-            if result != 0: self._get_api_error_message("SqlQry", "Conteo Articulos")
-
-            result = microsip_dll.SqlExecQuery(sql_handle_count)
-            if result != 0: self._get_api_error_message("SqlExecQuery", "Conteo Articulos")
-
-            if microsip_dll.SqlNext(sql_handle_count) == 0:
-                result_count = microsip_dll.SqlGetFieldAsInteger(sql_handle_count, b"C", byref(count_val))
-                if result_count == 0:
-                    total_esperado = count_val.value
-        finally:
-            microsip_dll.SqlClose(sql_handle_count)
-        
-        print(f"DEBUG: Conteo de artículos activos (COUNT(*)): {total_esperado}")
-        return total_esperado
-
-    def _obtener_conteo_claves_auxiliares(self):
-        """Ejecuta SELECT COUNT(*) y retorna el número total de claves auxiliares."""
-        sql_handle_count = microsip_dll.NewSql(self.trn_handle)
-        count_val = c_int(0)
-        total_esperado = 0
-        
-        query_count = "SELECT COUNT(*) C FROM CLAVES_ARTICULOS"
-        
-        try:
-            result = microsip_dll.SqlQry(sql_handle_count, query_count.encode('latin-1'))
-            if result != 0: self._get_api_error_message("SqlQry", "Conteo Claves")
-
-            result = microsip_dll.SqlExecQuery(sql_handle_count)
-            if result != 0: self._get_api_error_message("SqlExecQuery", "Conteo Claves")
-
-            if microsip_dll.SqlNext(sql_handle_count) == 0:
-                result_count = microsip_dll.SqlGetFieldAsInteger(sql_handle_count, b"C", byref(count_val))
-                if result_count == 0:
-                    total_esperado = count_val.value
-        finally:
-            microsip_dll.SqlClose(sql_handle_count)
-        
-        print(f"DEBUG: Conteo de claves auxiliares (COUNT(*)): {total_esperado}")
-        return total_esperado
-
-
-    # @microsip_connect <-- ELIMINADO para evitar doble decoración/desconexión
-    def extraer_articulos_y_claves_msip(self):
-        """
-        [FUNCIÓN DE BAJO NIVEL]
-        Extracción: Reúne y procesa datos de ARTICULOS y CLAVES_ARTICULOS.
-        Retorna (articulos_data, claves_por_articulo, ids_microsip_activos).
-        """
-        
-        # 0. Obtener el número de filas esperadas para Articulos (Maestro)
-        total_esperado_articulos = self._obtener_conteo_articulos_activos()
-        
-        articulos_data = {}
-        ids_microsip_activos = set()
-        
-        # --- 1. Extracción de ARTICULOS (Maestro) ---
-        sql_handle_articulos = microsip_dll.NewSql(self.trn_handle)
-        print("-> 1. Extrayendo ARTICULOS principales...") 
-        
-        # Usamos ORDER BY ARTICULO_ID para garantizar un orden de lectura predecible
-        query_articulos = "SELECT ARTICULO_ID, NOMBRE, SEGUIMIENTO FROM ARTICULOS WHERE ESTATUS = 'A' ORDER BY ARTICULO_ID ASC"
-        
-        # Inicialización del contador
-        articulos_procesados = 0
-        imprimir_cada = 1000 
-        last_processed_id = 0
-        
-        try:
-            result = microsip_dll.SqlQry(sql_handle_articulos, query_articulos.encode('latin-1'))
-            if result != 0: self._get_api_error_message("SqlQry", "Extraer Articulos")
-
-            result = microsip_dll.SqlExecQuery(sql_handle_articulos)
-            if result != 0: self._get_api_error_message("SqlExecQuery", "Extraer Articulos")
-
-            # Lectura y procesamiento de ARTICULOS
-            articulo_id_val = c_int(0)
-            
-            # ACOTAMOS: Limitamos el bucle al total esperado
-            while microsip_dll.SqlNext(sql_handle_articulos) == 0 and articulos_procesados < total_esperado_articulos:
-                
-                # Lectura de ID
-                result_id = microsip_dll.SqlGetFieldAsInteger(sql_handle_articulos, b"ARTICULO_ID", byref(articulo_id_val))
-                
-                if result_id != 0:
-                    print(f"Advertencia: Fallo al leer ARTICULO_ID para el registro #{articulos_procesados + 1}, saltando. Error code: {result_id}")
-                    continue
-
-                msip_id = articulo_id_val.value
-                last_processed_id = msip_id # Actualizar el último ID leído con éxito
-                
-                # Reporte en tiempo real
-                if articulos_procesados % imprimir_cada == 0:
-                    print(f"DEBUG: Procesando artículo {articulos_procesados + 1}/{total_esperado_articulos}. Último ID: {last_processed_id}", end='\r', flush=True) 
-                
-                ids_microsip_activos.add(msip_id)
-                
-                # Lectura de Opcionales
-                nombre = self._read_field_as_string(sql_handle_articulos, "NOMBRE")
-                seguimiento_raw = self._read_field_as_string(sql_handle_articulos, "SEGUIMIENTO")
-                
-                try:
-                    seguimiento_int = int(seguimiento_raw)
-                except ValueError:
-                    seguimiento_int = 0
-
-                articulos_data[msip_id] = {
-                    'clave': "", # Se llenará en el paso 2
-                    'nombre': nombre,
-                    'seguimiento_tipo': SEGUIMIENTO_MAP_IN.get(seguimiento_int, 'N'),
-                }
-                articulos_procesados += 1
-            
-            # VERIFICACIÓN DE SALIDA
-            if articulos_procesados >= total_esperado_articulos and total_esperado_articulos > 0:
-                print(f"\nDEBUG: Límite de {total_esperado_articulos} artículos alcanzado. Deteniendo bucle preventivamente.")
-            elif articulos_procesados < total_esperado_articulos:
-                 print(f"\nADVERTENCIA: Bucle terminado después de {articulos_procesados} registros, esperaba {total_esperado_articulos}.")
-
-        finally:
-            microsip_dll.SqlClose(sql_handle_articulos)
-            print(f"-> Artículos principales extraídos: {len(articulos_data)}. Total procesado: {articulos_procesados}. Último ID exitoso: {last_processed_id}")
-
-
-        # --- 2. Extracción de CLAVES_ARTICULOS (Códigos Auxiliares) ---
-        
-        total_esperado_claves = self._obtener_conteo_claves_auxiliares()
-        claves_por_articulo = {}
-        sql_handle_claves = microsip_dll.NewSql(self.trn_handle)
-        print("-> 2. Extrayendo CLAVES_ARTICULOS...")
-        
-        claves_procesadas = 0
-        
-        try:
-            query_claves = "SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS"
-            
-            result = microsip_dll.SqlQry(sql_handle_claves, query_claves.encode('latin-1'))
-            if result != 0: self._get_api_error_message("SqlQry", "Extraer Claves")
-            
-            result = microsip_dll.SqlExecQuery(sql_handle_claves)
-            if result != 0: self._get_api_error_message("SqlExecQuery", "Extraer Claves")
-
-            articulo_id_val = c_int(0)
-
-            # ACOTAMOS: Limitamos el bucle
-            while microsip_dll.SqlNext(sql_handle_claves) == 0 and claves_procesadas < total_esperado_claves:
-                
-                claves_procesadas += 1
-                if claves_procesadas % imprimir_cada == 0:
-                    print(f"DEBUG: Leyendo claves... Procesadas: {claves_procesadas}/{total_esperado_claves}", end='\r', flush=True)
-                
-                result_id = microsip_dll.SqlGetFieldAsInteger(sql_handle_claves, b"ARTICULO_ID", byref(articulo_id_val))
-                clave = self._read_field_as_string(sql_handle_claves, "CLAVE_ARTICULO")
-                
-                if result_id == 0:
-                    msip_id = articulo_id_val.value
-                    
-                    if msip_id in articulos_data:
-                        if msip_id not in claves_por_articulo:
-                            claves_por_articulo[msip_id] = []
-                        claves_por_articulo[msip_id].append(clave)
-                        
-                        # Asignar la primera clave auxiliar encontrada como la principal si está vacía
-                        if not articulos_data[msip_id]['clave']:
-                            articulos_data[msip_id]['clave'] = clave
-        
-            if claves_procesadas < total_esperado_claves:
-                 print(f"\nADVERTENCIA: Bucle de claves terminó antes de lo esperado.")
-
-        finally:
-            microsip_dll.SqlClose(sql_handle_claves)
-            print(f"-> Claves auxiliares agrupadas para {len(claves_por_articulo)} artículos. Total procesadas: {claves_procesadas}")
-
-
-        # ==============================================================================
-        # ⚠️ DIAGNÓSTICO DE ARTÍCULOS SIN CLAVE (PROBLEMÁTICOS)
-        # ==============================================================================
-        articulos_sin_clave = []
-        for msip_id, data in articulos_data.items():
-            if not data['clave']:  # Si la clave sigue vacía después del proceso de claves
-                articulos_sin_clave.append({
-                    'id_microsip': msip_id,
-                    'nombre': data['nombre']
-                })
-        
-        if articulos_sin_clave:
-            print(f"\n❌ ALERTA: Se encontraron {len(articulos_sin_clave)} artículos SIN CLAVE ASIGNADA.")
-            print("Estos artículos son los que probablemente están fallando al guardarse en Django.")
-            print("--- LISTADO DE ARTÍCULOS PROBLEMÁTICOS (Primeros 50) ---")
-            print(f"{'ID MICROSIP':<15} | {'NOMBRE'}")
-            print("-" * 50)
-            
-            for art in articulos_sin_clave[:50]: # Mostramos solo los primeros 50 para no inundar la consola
-                print(f"{art['id_microsip']:<15} | {art['nombre']}")
-            
-            if len(articulos_sin_clave) > 50:
-                print(f"... y {len(articulos_sin_clave) - 50} más.")
-            print("-" * 50)
-            
-            # --- CORRECCIÓN AUTOMÁTICA (FALLBACK) ---
-            # Asignamos MS-{ID} como clave para asegurar que se guarden
-            print("🛠️ Aplicando corrección automática: Asignando 'MS-{ID}' como clave temporal...")
-            for msip_id in [a['id_microsip'] for a in articulos_sin_clave]:
-                articulos_data[msip_id]['clave'] = f"MS-{msip_id}"
-        else:
-            print("\n✅ DIAGNÓSTICO: Todos los artículos tienen clave asignada.")
-
-        print(f"DEBUG: Catálogo extraído: {len(articulos_data)} artículos.")
-        return articulos_data, claves_por_articulo, ids_microsip_activos
-
-    def _read_field_as_string(self, sql_handle, field_name):
-        """Helper para leer un campo STRING de forma segura."""
-        name_bytes = field_name.encode('latin-1')
-        buffer = create_string_buffer(256)
-        result = microsip_dll.SqlGetFieldAsString(sql_handle, name_bytes, buffer)
-        
-        if result == 0:
-            return buffer.value.decode('latin-1', errors='ignore').strip()
-        return ""
-
     def diagnostico_sql(self):
         """Prueba rápida para diagnosticar si el motor SQL acepta una consulta mínima."""
         info = {}
@@ -396,8 +171,9 @@ class MicrosipConnectionBase:
     @microsip_connect
     def registrar_entrada_msip(self, encabezado_data, renglones_data):
         """
-        [FUNCIÓN DE BAJO NIVEL]
+        [FUNCIÓN DE BAJO NIVEL - CONSERVADA PARA ESCALABILIDAD]
         Implementa la lógica completa para registrar una nueva Entrada de Inventario en Microsip.
+        Esta función es vital para futuras funcionalidades de escritura (ej. enviar conteos a Microsip).
         """
         # 1. ENCABEZADO
         print("DEBUG: Iniciando NuevaEntrada...")

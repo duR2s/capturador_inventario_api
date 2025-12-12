@@ -17,9 +17,17 @@ class Empleado(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='empleado')
+    
+    # Datos laborales
     clave_interna = models.CharField(max_length=255, null=True, blank=True, help_text="ID de trabajador o Clave Admin en Microsip")
-    telefono = models.CharField(max_length=255, null=True, blank=True)
     puesto = models.CharField(max_length=50, choices=PUESTO_CHOICES, default='CAPTURADOR')
+    
+    # Datos personales (Agregados para compatibilidad con AdminView)
+    telefono = models.CharField(max_length=255, null=True, blank=True)
+    rfc = models.CharField(max_length=13, null=True, blank=True, help_text="RFC del empleado")
+    fecha_nacimiento = models.DateField(null=True, blank=True)
+    edad = models.IntegerField(null=True, blank=True)
+    
     creation = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -46,12 +54,10 @@ class Articulo(models.Model):
     nombre = models.CharField(max_length=255, db_index=True)
     
     # Precios y Costos (Snapshot para la app, no es el cálculo en tiempo real del ERP)
-    # Recomendación: Usar decimal_places=6 para coincidir con la precisión de costos de Firebird
     costo_ultimo = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     precio_lista = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     
     # Seguimiento: 'N' (Normal), 'L' (Lotes), 'S' (Series). 
-    # Importante para validaciones en el frontend (ej. pedir lote al surtir).
     seguimiento_tipo = models.CharField(max_length=1, default='N', choices=[('N', 'Normal'), ('L', 'Lotes'), ('S', 'Series')])
     
     # Control de estado
@@ -61,7 +67,6 @@ class Articulo(models.Model):
     class Meta:
         verbose_name = "Artículo"
         verbose_name_plural = "Artículos"
-        # Índices compuestos si buscas mucho por nombre Y activo a la vez
         indexes = [
             models.Index(fields=['nombre', 'activo']),
         ]
@@ -73,23 +78,14 @@ class Articulo(models.Model):
 class ClaveAuxiliar(models.Model):
     """
     Representa la tabla CLAVES_ARTICULOS de Microsip (Solo Rol 18 y otros).
-    Permite que un escáner encuentre el producto aunque lea un código de barras alterno.
     """
     articulo = models.ForeignKey(Articulo, on_delete=models.CASCADE, related_name='claves_auxiliares')
-    
-    # La clave auxiliar (ej. Código de Barras EAN13).
     clave = models.CharField(max_length=50, db_index=True)
-    
-    # Guardamos el rol por si en el futuro necesitas distinguir entre EAN, DUN14, etc.
     rol_clave_msip = models.IntegerField(default=18)
 
     class Meta:
         verbose_name = "Clave Auxiliar"
         verbose_name_plural = "Claves Auxiliares"
-        # Un artículo no debería tener la misma clave auxiliar dos veces, 
-        # y una clave auxiliar debería ser única globalmente idealmente, 
-        # pero Microsip a veces permite duplicados entre productos distintos, 
-        # así que unique_together es más seguro.
         unique_together = ('articulo', 'clave')
 
     def __str__(self):
@@ -97,7 +93,7 @@ class ClaveAuxiliar(models.Model):
 
 
 # -------------------------------------------------------------------------
-# 3. INVENTARIO Y UBICACIONES (Datos Transaccionales/Logísticos)
+# 3. INVENTARIO Y UBICACIONES
 # -------------------------------------------------------------------------
 
 class Almacen(models.Model):
@@ -111,33 +107,17 @@ class Almacen(models.Model):
 
 
 class InventarioArticulo(models.Model):
-    """
-    Esta es tu tabla "Híbrida" optimizada.
-    Combina datos de:
-    1. SALDOS_IN (Para el campo 'existencia')
-    2. NIVELES_ARTICULOS (Para 'localizacion', 'min', 'max')
-    """
     id = models.BigAutoField(primary_key=True)
-    
-    # Relaciones
     articulo = models.ForeignKey(Articulo, on_delete=models.CASCADE, related_name='existencias_almacen')
     almacen = models.ForeignKey(Almacen, on_delete=models.CASCADE, related_name='inventario')
     
-    # Dato Crítico: Ubicación
-    # Agregamos db_index=True porque seguramente filtrarás "Dame todo lo que está en el pasillo A"
     localizacion = models.CharField(max_length=50, blank=True, null=True, verbose_name="Ubicación", db_index=True)
-    
-    # Dato Crítico: Existencia (Snapshot)
     existencia = models.DecimalField(max_digits=18, decimal_places=5, default=0)
     
-    # Niveles (Informativo para la UI, ej. mostrar alerta si stock < minimo)
     stock_minimo = models.DecimalField(max_digits=18, decimal_places=5, default=0)
     stock_maximo = models.DecimalField(max_digits=18, decimal_places=5, default=0)
     punto_reorden = models.DecimalField(max_digits=18, decimal_places=5, default=0)
 
-    # Flags para WRITE-BACK (Escritura futura)
-    # Si modificas la localización en la App, marcas esto en True.
-    # Tu script de sincronización sabrá que debe enviar este dato a Microsip y no sobrescribirlo.
     pendiente_sincronizar_msip = models.BooleanField(default=False, help_text="True si se editó localmente y falta enviar a Microsip")
     fecha_ultima_modificacion_local = models.DateTimeField(auto_now=True)
 
@@ -145,12 +125,13 @@ class InventarioArticulo(models.Model):
         verbose_name = "Inventario por Almacén"
         unique_together = ('articulo', 'almacen')
         indexes = [
-            # Índice compuesto muy útil para: "Dame la existencia del articulo X en el almacen Y"
             models.Index(fields=['articulo', 'almacen']),
         ]
 
     def __str__(self):
         return f"{self.articulo.clave} en {self.almacen.nombre}: {self.existencia}"
+
+
 # -------------------------------------------------------------------------
 # 4. OPERACIONES Y LOGS
 # -------------------------------------------------------------------------
@@ -190,7 +171,6 @@ class Captura(models.Model):
     almacen = models.ForeignKey(Almacen, on_delete=models.SET_NULL, null=True)
     capturador = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='capturas')
     
-    # CORREGIDO: Uso correcto de timezone.now
     fecha_captura = models.DateTimeField(default=timezone.now)
     
     estado = models.CharField(max_length=20, choices=ESTADOS, default='BORRADOR')
@@ -204,8 +184,6 @@ class Captura(models.Model):
 
 class DetalleCaptura(models.Model):
     captura = models.ForeignKey(Captura, related_name='detalles', on_delete=models.CASCADE)
-    
-    # MODIFICADO: null=True temporalmente para facilitar la migración
     articulo = models.ForeignKey(Articulo, on_delete=models.PROTECT, null=True, blank=True)
     
     cantidad_contada = models.DecimalField(max_digits=18, decimal_places=5)
@@ -216,7 +194,6 @@ class DetalleCaptura(models.Model):
         unique_together = ('captura', 'articulo')
 
     def __str__(self):
-        # Manejo seguro si articulo es None temporalmente
         clave = self.articulo.clave if self.articulo else "SIN_ARTICULO"
         return f"{clave}: Contado {self.cantidad_contada}"
 
@@ -226,8 +203,4 @@ class DetalleCaptura(models.Model):
 # -------------------------------------------------------------------------
 
 class BearerTokenAuthentication(TokenAuthentication):
-    """
-    Clase necesaria para settings.py.
-    Permite usar 'Bearer <token>' en lugar de 'Token <token>'.
-    """
     keyword = 'Bearer'

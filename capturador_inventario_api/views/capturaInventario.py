@@ -3,8 +3,23 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from ..models import Captura, DetalleCaptura
-from ..serializers import CapturaSerializer, DetalleCapturaSerializer
+# Asegúrate de importar Almacen y sus serializadores
+from ..models import Captura, DetalleCaptura, Almacen
+from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer
+
+class AlmacenOptionsView(APIView):
+    """
+    Endpoint: GET /api/inventario/almacenes/
+    Lista los almacenes activos para llenar selects.
+    """
+    def get(self, request, *args, **kwargs):
+        try:
+            almacenes = Almacen.objects.filter(activo_web=True).order_by('nombre')
+            serializer = AlmacenSerializer(almacenes, many=True)
+            # IMPORTANTE: Este return es el que faltaba o fallaba
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CapturaInventarioView(APIView):
     """
@@ -35,30 +50,23 @@ class SincronizarCapturaView(APIView):
     """
     Endpoint: POST /api/inventario/captura/{pk}/sincronizar/
     Recibe un ARRAY de detalles para insertar masivamente en una captura existente.
-    Útil para la recuperación de conexión (Offline -> Online).
     """
     def post(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
 
-        # Se espera una lista de objetos JSON: [{"producto_codigo": "X", "cantidad_contada": 1}, ...]
         if not isinstance(request.data, list):
             return Response(
                 {"error": "Se esperaba una lista (array) de detalles."}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Usamos many=True para validar la lista completa
         serializer = DetalleCapturaSerializer(data=request.data, many=True)
 
         if serializer.is_valid():
             try:
                 with transaction.atomic():
-                    # Guardamos inyectando la instancia de captura padre
                     serializer.save(captura=captura)
                 
-                # RETORNO DE SINCRONIZACIÓN:
-                # Devolvemos LA LISTA COMPLETA actualizada de la BD para que el frontend
-                # reemplace su estado local y asegure consistencia total.
                 todos_los_detalles = DetalleCaptura.objects.filter(captura=captura).order_by('-id')
                 respuesta_serializer = DetalleCapturaSerializer(todos_los_detalles, many=True)
                 
@@ -79,11 +87,7 @@ class DetalleIndividualView(APIView):
     Para el modo Online: agrega un solo registro.
     """
     def post(self, request, *args, **kwargs):
-        # Esperamos { "captura_id": 1, "producto_codigo": "...", "cantidad_contada": ... }
-        # Ojo: El serializador espera 'captura' como ID.
         data = request.data.copy()
-        
-        # Mapeo simple por si el frontend envía 'captura_id' en lugar de 'captura'
         if 'captura_id' in data:
             data['captura'] = data.pop('captura_id')
 

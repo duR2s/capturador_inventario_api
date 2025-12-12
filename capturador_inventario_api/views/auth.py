@@ -1,5 +1,5 @@
 from django.db.models import *
-from capturador_inventario_api.models import Profiles
+from capturador_inventario_api.models import *
 from capturador_inventario_api.serializers import *
 from capturador_inventario_api.models import *
 from rest_framework import permissions
@@ -17,17 +17,16 @@ class CustomAuthToken(ObtainAuthToken):
 
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
+        
         if user.is_active:
-
             roles = user.groups.all()
             role_names = []
             for role in roles:
                 role_names.append(role.name)
 
-            profile = Profiles.objects.filter(user=user).first()
-            if not profile:
-                return Response({},404)
-
+            # ELIMINADO: La línea que causaba el error (user.objects...)
+            # user ya es la instancia correcta.
+            
             token, created = Token.objects.get_or_create(user=user)
 
             return Response({
@@ -37,8 +36,8 @@ class CustomAuthToken(ObtainAuthToken):
                 'email': user.email,
                 'token': token.key,
                 'roles': role_names
-
             })
+            
         return Response({}, status=status.HTTP_403_FORBIDDEN)
 
 
@@ -52,10 +51,12 @@ class Logout(generics.GenericAPIView):
         user = request.user
         print(str(user))
         if user.is_active:
-            token = Token.objects.get(user=user)
-            token.delete()
-
-            return Response({'logout':True})
+            try:
+                token = Token.objects.get(user=user)
+                token.delete()
+                return Response({'logout':True})
+            except Token.DoesNotExist:
+                return Response({'logout': False, 'message': 'Token no encontrado'})
 
 
         return Response({'logout': False})

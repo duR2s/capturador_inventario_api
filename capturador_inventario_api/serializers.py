@@ -51,6 +51,7 @@ class ClaveAuxiliarSerializer(serializers.ModelSerializer):
 
 # --- 3. Serializadores de Captura y Detalle ---
 
+
 class DetalleCapturaSerializer(serializers.ModelSerializer):
     # Nombre del artículo para mostrar en respuesta (readonly)
     articulo_nombre = serializers.SerializerMethodField(read_only=True)
@@ -78,12 +79,15 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
 
 
 class CapturaSerializer(serializers.ModelSerializer):
-    detalles = DetalleCapturaSerializer(many=True)
+    detalles = DetalleCapturaSerializer(many=True, required=False) # Hacemos detalles opcional al crear cabecera
     
     capturador_nombre = serializers.CharField(
         source='capturador.username', 
         read_only=True
     )
+    
+    # Agregamos campo de lectura para mostrar nombre de almacén si se desea
+    almacen_nombre = serializers.CharField(source='almacen.nombre', read_only=True)
 
     modo_offline = serializers.BooleanField(write_only=True, required=False, default=False)
     fecha_reportada = serializers.DateTimeField(write_only=True, required=False)
@@ -94,25 +98,21 @@ class CapturaSerializer(serializers.ModelSerializer):
             'id', 
             'folio', 
             'capturador', 
-            'capturador_nombre', 
+            'capturador_nombre',
+            'almacen',          # <--- AGREGADO: Necesario para guardar el almacén
+            'almacen_nombre',   # <--- AGREGADO: Para lectura
             'fecha_captura', 
             'estado', 
             'detalles',
             'modo_offline',
             'fecha_reportada'
         ]
-        read_only_fields = ['id', 'capturador_nombre']
+        read_only_fields = ['id', 'capturador_nombre', 'almacen_nombre']
 
-    def validate(self, data):
-        detalles = data.get('detalles', [])
-        # Nota: En sincronización masiva offline, la validación estricta de existencia
-        # podría bloquear todo el lote. Aquí validamos integridad básica.
-        if not detalles:
-            raise serializers.ValidationError({"detalles": "La captura debe tener al menos un detalle."})
-        return data
 
     def create(self, validated_data):
-        detalles_data = validated_data.pop('detalles')
+        # Extraemos detalles si vienen, si no, lista vacía
+        detalles_data = validated_data.pop('detalles', [])
         modo_offline = validated_data.pop('modo_offline', False)
         fecha_reportada = validated_data.pop('fecha_reportada', None)
 
@@ -129,3 +129,8 @@ class CapturaSerializer(serializers.ModelSerializer):
         DetalleCaptura.objects.bulk_create(objs_detalles)
             
         return captura
+    
+class AlmacenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Almacen
+        fields = ['id', 'almacen_id_msip', 'nombre', 'activo_web']

@@ -6,17 +6,12 @@ from .models import *
 # --- 1. Serializadores de Usuario y Empleado ---
 
 class UserSerializer(serializers.ModelSerializer):
-    """Serializador básico para el modelo User de Django."""
     class Meta:
         model = User
         fields = ("id", "first_name", "last_name", "email", "username")
 
 
 class EmpleadoSerializer(serializers.ModelSerializer):
-    """
-    Serializador unificado para el modelo Empleado.
-    Reemplaza a AdministradoresSerializer y CapturadoresSerializer.
-    """
     user = UserSerializer(read_only=True)
     puesto_display = serializers.CharField(source='get_puesto_display', read_only=True)
 
@@ -51,67 +46,109 @@ class ClaveAuxiliarSerializer(serializers.ModelSerializer):
 
 # --- 3. Serializadores de Captura y Detalle ---
 
-
 class DetalleCapturaSerializer(serializers.ModelSerializer):
-    # Nombre del artículo para mostrar en respuesta (readonly)
+    # Campo de entrada (texto) para recibir "23", "COCA600", etc.
+    producto_codigo = serializers.CharField(write_only=True) 
+    
+    # Campo de salida para mostrar el nombre en la respuesta
     articulo_nombre = serializers.SerializerMethodField(read_only=True)
+    
+    # Campo de salida para devolver el código real encontrado
+    codigo_confirmado = serializers.CharField(source='articulo.clave', read_only=True)
 
     class Meta:
         model = DetalleCaptura
-        fields = ['id', 'captura', 'producto_codigo', 'cantidad_contada', 'articulo_nombre'] 
-        read_only_fields = ['id', 'articulo_nombre']
-        # 'captura' se puede enviar, pero si se usa en bulk sync por URL, se inyectará en el save()
+        fields = [
+            'id', 
+            'captura', 
+            'producto_codigo',   # Entrada
+            'codigo_confirmado', # Salida
+            'cantidad_contada', 
+            'articulo_nombre',
+            'existencia_sistema_al_momento'
+        ] 
+        read_only_fields = ['id', 'articulo_nombre', 'codigo_confirmado', 'existencia_sistema_al_momento']
+
+    def create(self, validated_data):
+        # 1. Extraemos y limpiamos el código
+        codigo_raw = validated_data.pop('producto_codigo', '')
+        codigo = str(codigo_raw).strip() # Quitamos espacios al inicio/final
+
+        print(f"\n[DEBUG] --- Iniciando búsqueda de producto ---")
+        print(f"[DEBUG] Código recibido raw: '{codigo_raw}'")
+        print(f"[DEBUG] Código limpio: '{codigo}'")
+
+        # 2. Búsqueda del Artículo (Insensible a mayúsculas)
+        articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+        
+        if articulo:
+            print(f"[DEBUG] ¡ENCONTRADO en Articulos! ID: {articulo.id}, Nombre: {articulo.nombre}")
+        else:
+            print(f"[DEBUG] No encontrado en Articulo principal. Buscando en auxiliares...")
+            aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
+            if aux:
+                articulo = aux.articulo
+                print(f"[DEBUG] ¡ENCONTRADO en Auxiliares! ID: {articulo.id}, Nombre: {articulo.nombre}")
+            else:
+                print(f"[DEBUG] X NO ENCONTRADO en ninguna tabla.")
+        
+        # 3. Validación final
+        if not articulo:
+            raise serializers.ValidationError({
+                "producto_codigo": f"No se encontró el artículo '{codigo}' en el catálogo."
+            })
+
+        # ---------------------------------------------------------------------
+        # Lógica UPSERT (Sumar si ya existe en la captura)
+        # ---------------------------------------------------------------------
+        captura = validated_data.get('captura')
+        cantidad_nueva = validated_data.get('cantidad_contada')
+
+        detalle_existente = DetalleCaptura.objects.filter(captura=captura, articulo=articulo).first()
+
+        if detalle_existente:
+            print(f"[DEBUG] El artículo ya estaba en la captura. Sumando cantidad (+{cantidad_nueva}).")
+            detalle_existente.cantidad_contada += cantidad_nueva
+            detalle_existente.save()
+            return detalle_existente
+        
+        else:
+            print(f"[DEBUG] Creando nuevo registro de detalle.")
+            validated_data['articulo'] = articulo
+            
+            # Snapshot de existencia teórica
+            if captura and captura.almacen:
+                inv = InventarioArticulo.objects.filter(articulo=articulo, almacen=captura.almacen).first()
+                if inv:
+                    validated_data['existencia_sistema_al_momento'] = inv.existencia
+
+            return super().create(validated_data)
 
     def get_articulo_nombre(self, obj):
-        # Intenta buscar el nombre para dar feedback visual inmediato
-        try:
-            # Primero busca si es clave directa de Articulo
-            art = Articulo.objects.filter(clave=obj.producto_codigo).first()
-            if art: return art.nombre
-            
-            # Si no, busca en auxiliares
-            aux = ClaveAuxiliar.objects.filter(clave=obj.producto_codigo).select_related('articulo').first()
-            if aux: return aux.articulo.nombre
-            
-            return "Producto Desconocido"
-        except:
-            return "N/A"
+        if obj.articulo:
+            return obj.articulo.nombre
+        return "Producto Desconocido"
 
 
 class CapturaSerializer(serializers.ModelSerializer):
-    detalles = DetalleCapturaSerializer(many=True, required=False) # Hacemos detalles opcional al crear cabecera
+    detalles = DetalleCapturaSerializer(many=True, required=False)
     
-    capturador_nombre = serializers.CharField(
-        source='capturador.username', 
-        read_only=True
-    )
-    
-    # Agregamos campo de lectura para mostrar nombre de almacén si se desea
+    capturador_nombre = serializers.CharField(source='capturador.username', read_only=True)
     almacen_nombre = serializers.CharField(source='almacen.nombre', read_only=True)
-
     modo_offline = serializers.BooleanField(write_only=True, required=False, default=False)
     fecha_reportada = serializers.DateTimeField(write_only=True, required=False)
 
     class Meta:
         model = Captura
         fields = [
-            'id', 
-            'folio', 
-            'capturador', 
-            'capturador_nombre',
-            'almacen',          # <--- AGREGADO: Necesario para guardar el almacén
-            'almacen_nombre',   # <--- AGREGADO: Para lectura
-            'fecha_captura', 
-            'estado', 
-            'detalles',
-            'modo_offline',
-            'fecha_reportada'
+            'id', 'folio', 'capturador', 'capturador_nombre',
+            'almacen', 'almacen_nombre',
+            'fecha_captura', 'estado', 'detalles',
+            'modo_offline', 'fecha_reportada'
         ]
         read_only_fields = ['id', 'capturador_nombre', 'almacen_nombre']
 
-
     def create(self, validated_data):
-        # Extraemos detalles si vienen, si no, lista vacía
         detalles_data = validated_data.pop('detalles', [])
         modo_offline = validated_data.pop('modo_offline', False)
         fecha_reportada = validated_data.pop('fecha_reportada', None)
@@ -122,11 +159,25 @@ class CapturaSerializer(serializers.ModelSerializer):
             captura.fecha_captura = fecha_reportada
             captura.save()
         
-        objs_detalles = [
-            DetalleCaptura(captura=captura, **detalle) 
-            for detalle in detalles_data
-        ]
-        DetalleCaptura.objects.bulk_create(objs_detalles)
+        objs_detalles = []
+        for detalle in detalles_data:
+            codigo_raw = detalle.get('producto_codigo', '')
+            codigo = str(codigo_raw).strip()
+            
+            articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+            if not articulo:
+                 aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
+                 if aux: articulo = aux.articulo
+            
+            if articulo:
+                objs_detalles.append(DetalleCaptura(
+                    captura=captura, 
+                    articulo=articulo, 
+                    cantidad_contada=detalle['cantidad_contada']
+                ))
+
+        if objs_detalles:
+            DetalleCaptura.objects.bulk_create(objs_detalles)
             
         return captura
     

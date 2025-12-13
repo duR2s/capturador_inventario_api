@@ -16,7 +16,6 @@ class AlmacenOptionsView(APIView):
         try:
             almacenes = Almacen.objects.filter(activo_web=True).order_by('nombre')
             serializer = AlmacenSerializer(almacenes, many=True)
-            # IMPORTANTE: Este return es el que faltaba o fallaba
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -45,6 +44,16 @@ class CapturaInventarioView(APIView):
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+class CapturaDetailView(APIView):
+    """
+    Endpoint: GET /api/inventario/captura/<int:pk>/
+    Recupera una captura completa (Cabecera + Detalles) por su ID.
+    CRITICO: Necesario para que el Frontend pueda recargar la página usando el ID de la URL.
+    """
+    def get(self, request, pk, *args, **kwargs):
+        captura = get_object_or_404(Captura, pk=pk)
+        serializer = CapturaSerializer(captura)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class SincronizarCapturaView(APIView):
     """

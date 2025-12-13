@@ -25,9 +25,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',     # <--- MOVER AQUÍ (Al principio de todo)
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',     # CORS debe ir antes de CommonMiddleware
+    # 'corsheaders.middleware.CorsMiddleware',   # <--- BORRAR DE AQUÍ
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -35,12 +36,22 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# Configuración de CORS: define orígenes permitidos y quita CORS_ORIGIN_ALLOW_ALL
+# Configuración de CORS
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:4200',
-    'http://192.168.0.46:8000'
+    'http://127.0.0.1:4200',
+    'http://192.168.0.46:8000',
+    # Agrega la IP de tu celular si estás probando remoto
+    'http://192.168.0.46:4200' 
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# AGREGAR ESTO (Necesario para Django 4+ y 5+ en peticiones POST)
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+    "http://192.168.0.46:4200",
+]
 
 ROOT_URLCONF = 'capturador_inventario_api.urls'
 
@@ -155,3 +166,39 @@ Q_CLUSTER = {
 
 # Configuración para evitar el warning models.W042
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',  # Cambiar a 'DEBUG' si quieres ver hasta las consultas SQL
+            'propagate': True,
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'DEBUG',  # Esto te mostrará errores 4xx y 5xx detallados
+            'propagate': True,
+        },
+        'capturador_inventario_api': {  # Reemplaza con el nombre exacto de tu app si es diferente
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}

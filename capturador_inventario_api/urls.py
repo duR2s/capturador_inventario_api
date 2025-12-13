@@ -8,11 +8,10 @@ from .views.bootstrap import VersionView
 from .views.capturaInventario import CapturaInventarioView, SincronizarCapturaView, DetalleIndividualView
 from .views.empleado import EmpleadoView, EmpleadoAll
 from .views.auth import CustomAuthToken, Logout
-from .views.capturaInventario import AlmacenOptionsView
+# Importamos la nueva vista de Detalle
+from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView
 
 # Importamos las NUEVAS vistas de administrador
-# Asegúrate de que 'administrador.py' esté accesible como módulo. 
-# Si está en una carpeta 'views', sería: from .views.administrador import ...
 from .views.administrador import AdminView, AdminAll 
 
 urlpatterns = [
@@ -31,8 +30,15 @@ urlpatterns = [
     path("api/empleado/", EmpleadoView.as_view(), name="api-empleado-manage"),
 
     # --- RUTAS DE INVENTARIO ---
+    
+    # 0. Catálogos para selects (NUEVO)
+    path("api/inventario/almacenes/", AlmacenOptionsView.as_view(), name="api-almacenes-list"),
+
     # 1. Gestión de Cabecera (Crear Folio)
     path("api/inventario/captura/", CapturaInventarioView.as_view(), name="api-captura-create"),
+    
+    # 1.1 Recuperar Captura por ID (NUEVA RUTA para soporte de recarga por URL)
+    path("api/inventario/captura/<int:pk>/", CapturaDetailView.as_view(), name="api-captura-detail"),
     
     # 2. Sincronización Masiva (Offline -> Online)
     path("api/inventario/captura/<int:pk>/sincronizar/", SincronizarCapturaView.as_view(), name="api-captura-sync"),
@@ -41,13 +47,6 @@ urlpatterns = [
     path("api/inventario/detalle/", DetalleIndividualView.as_view(), name="api-detalle-create"),
     path("api/inventario/detalle/<int:pk>/", DetalleIndividualView.as_view(), name="api-detalle-manage"),
 
-    # 4. RUTAS DE INVENTARIO ---
-    
-    # 0. Catálogos para selects (NUEVO)
-    path("api/inventario/almacenes/", AlmacenOptionsView.as_view(), name="api-almacenes-list"),
-
-    # 1. Gestión de Cabecera (Crear Folio)
-    path("api/inventario/captura/", CapturaInventarioView.as_view(), name="api-captura-create"),
     # --- RUTAS DE AUTENTICACIÓN ---
     path("api/login/", CustomAuthToken.as_view(), name="api-login"),
     path("api/logout/", Logout.as_view(), name="api-logout"),

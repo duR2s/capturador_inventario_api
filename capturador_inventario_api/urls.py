@@ -8,8 +8,8 @@ from .views.bootstrap import VersionView
 from .views.capturaInventario import CapturaInventarioView, SincronizarCapturaView, DetalleIndividualView
 from .views.empleado import EmpleadoView, EmpleadoAll
 from .views.auth import CustomAuthToken, Logout
-# Importamos la nueva vista de Detalle
-from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView
+# Importamos la nueva vista de Detalle y Busqueda
+from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView, ArticuloBusquedaView # <--- IMPORTAR ArticuloBusquedaView
 
 # Importamos las NUEVAS vistas de administrador
 from .views.administrador import AdminView, AdminAll 
@@ -31,13 +31,16 @@ urlpatterns = [
 
     # --- RUTAS DE INVENTARIO ---
     
-    # 0. Catálogos para selects (NUEVO)
+    # 0. Catálogos para selects
     path("api/inventario/almacenes/", AlmacenOptionsView.as_view(), name="api-almacenes-list"),
+
+    # 0.1 Búsqueda de Artículos (NUEVO)
+    path("api/inventario/buscar-articulo/", ArticuloBusquedaView.as_view(), name="api-buscar-articulo"),
 
     # 1. Gestión de Cabecera (Crear Folio)
     path("api/inventario/captura/", CapturaInventarioView.as_view(), name="api-captura-create"),
     
-    # 1.1 Recuperar Captura por ID (NUEVA RUTA para soporte de recarga por URL)
+    # 1.1 Recuperar Captura por ID
     path("api/inventario/captura/<int:pk>/", CapturaDetailView.as_view(), name="api-captura-detail"),
     
     # 2. Sincronización Masiva (Offline -> Online)

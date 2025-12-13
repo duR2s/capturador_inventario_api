@@ -4,8 +4,8 @@ from rest_framework import status
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 # Asegúrate de importar Almacen y sus serializadores
-from ..models import Captura, DetalleCaptura, Almacen
-from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer
+from ..models import Captura, DetalleCaptura, Almacen, Articulo, ClaveAuxiliar
+from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer, ArticuloSerializer
 
 class AlmacenOptionsView(APIView):
     """
@@ -19,6 +19,38 @@ class AlmacenOptionsView(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ArticuloBusquedaView(APIView):
+    """
+    Endpoint: GET /api/inventario/buscar-articulo/?codigo=XYZ
+    NUEVO: Busca un artículo por código principal o auxiliar y retorna su data
+    (ID, Nombre, Clave) sin crear registros.
+    """
+    def get(self, request, *args, **kwargs):
+        codigo = request.query_params.get('codigo', '').strip()
+        if not codigo:
+            return Response({"error": "Código no proporcionado"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. Buscar en Articulos (Clave Principal)
+        articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+
+        # 2. Buscar en Claves Auxiliares si no se encontró
+        if not articulo:
+            aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
+            if aux:
+                articulo = aux.articulo
+        
+        if articulo:
+            # Usamos el serializador existente o construimos una respuesta simple
+            data = {
+                "id": articulo.id,
+                "clave": articulo.clave,
+                "nombre": articulo.nombre,
+                "existencia_teorica": 0 # Placeholder si quisieras mostrar existencia actual
+            }
+            return Response(data, status=status.HTTP_200_OK)
+        else:
+            return Response({"error": "Producto no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
 class CapturaInventarioView(APIView):
     """
@@ -48,7 +80,6 @@ class CapturaDetailView(APIView):
     """
     Endpoint: GET /api/inventario/captura/<int:pk>/
     Recupera una captura completa (Cabecera + Detalles) por su ID.
-    CRITICO: Necesario para que el Frontend pueda recargar la página usando el ID de la URL.
     """
     def get(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
@@ -58,7 +89,7 @@ class CapturaDetailView(APIView):
 class SincronizarCapturaView(APIView):
     """
     Endpoint: POST /api/inventario/captura/{pk}/sincronizar/
-    Recibe un ARRAY de detalles para insertar masivamente en una captura existente.
+    Recibe un ARRAY de detalles para insertar masivamente.
     """
     def post(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)

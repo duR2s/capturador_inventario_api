@@ -42,7 +42,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:4200',
     'http://192.168.0.46:8000',
     # Agrega la IP de tu celular si estás probando remoto
-    'http://192.168.0.46:4200' 
+    'http://192.168.0.46:4200'
 ]
 CORS_ALLOW_CREDENTIALS = True
 

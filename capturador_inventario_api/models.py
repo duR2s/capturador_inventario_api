@@ -22,7 +22,7 @@ class Empleado(models.Model):
     clave_interna = models.CharField(max_length=255, null=True, blank=True, help_text="ID de trabajador o Clave Admin en Microsip")
     puesto = models.CharField(max_length=50, choices=PUESTO_CHOICES, default='CAPTURADOR')
     
-    # Datos personales (Agregados para compatibilidad con AdminView)
+    # Datos personales
     telefono = models.CharField(max_length=255, null=True, blank=True)
     rfc = models.CharField(max_length=13, null=True, blank=True, help_text="RFC del empleado")
     fecha_nacimiento = models.DateField(null=True, blank=True)
@@ -39,28 +39,16 @@ class Empleado(models.Model):
 # -------------------------------------------------------------------------
 
 class Articulo(models.Model):
-    """
-    Representa la tabla ARTICULOS de Microsip.
-    Optimizada para búsquedas rápidas por nombre y clave principal.
-    """
     id = models.BigAutoField(primary_key=True)
-    
-    # ID original de Microsip. Fundamental para la sincronización y write-back.
     articulo_id_msip = models.IntegerField(unique=True, db_index=True, verbose_name="ID MSIP")
-    
-    # Clave Principal (Rol 17 en Microsip). Indexada para búsquedas exactas.
     clave = models.CharField(max_length=50, db_index=True, unique=True, help_text="Clave Principal (Rol 17)")
-    
     nombre = models.CharField(max_length=255, db_index=True)
     
-    # Precios y Costos (Snapshot para la app, no es el cálculo en tiempo real del ERP)
     costo_ultimo = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     precio_lista = models.DecimalField(max_digits=18, decimal_places=6, default=0)
     
-    # Seguimiento: 'N' (Normal), 'L' (Lotes), 'S' (Series). 
     seguimiento_tipo = models.CharField(max_length=1, default='N', choices=[('N', 'Normal'), ('L', 'Lotes'), ('S', 'Series')])
     
-    # Control de estado
     activo = models.BooleanField(default=True)
     ultima_sincronizacion = models.DateTimeField(auto_now=True)
 
@@ -76,9 +64,6 @@ class Articulo(models.Model):
 
 
 class ClaveAuxiliar(models.Model):
-    """
-    Representa la tabla CLAVES_ARTICULOS de Microsip (Solo Rol 18 y otros).
-    """
     articulo = models.ForeignKey(Articulo, on_delete=models.CASCADE, related_name='claves_auxiliares')
     clave = models.CharField(max_length=50, db_index=True)
     rol_clave_msip = models.IntegerField(default=18)
@@ -196,6 +181,20 @@ class DetalleCaptura(models.Model):
     def __str__(self):
         clave = self.articulo.clave if self.articulo else "SIN_ARTICULO"
         return f"{clave}: Contado {self.cantidad_contada}"
+
+# --- NUEVO MODELO: TICKET SALIDA ---
+class TicketSalida(models.Model):
+    """
+    Documenta la salida de mercancía que estaba siendo capturada.
+    La cantidad aquí registrada se RESTA de la cantidad_contada del detalle padre.
+    """
+    detalle = models.ForeignKey(DetalleCaptura, on_delete=models.CASCADE, related_name='tickets')
+    responsable = models.CharField(max_length=255, verbose_name="Persona que retira")
+    cantidad = models.DecimalField(max_digits=18, decimal_places=5)
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Ticket: {self.cantidad} pzas - {self.responsable}"
 
 
 # -------------------------------------------------------------------------

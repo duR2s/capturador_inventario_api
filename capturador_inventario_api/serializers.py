@@ -44,14 +44,23 @@ class ClaveAuxiliarSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+# --- NUEVO SERIALIZADOR DE TICKET ---
+class TicketSalidaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TicketSalida
+        fields = ['id', 'detalle', 'responsable', 'cantidad', 'fecha_hora']
+        read_only_fields = ['id', 'fecha_hora']
+
+
 # --- 3. Serializadores de Captura y Detalle ---
 
 class DetalleCapturaSerializer(serializers.ModelSerializer):
-    # Campo de entrada: Lo definimos write_only para que DRF no intente buscarlo en el modelo al leer.
     producto_codigo = serializers.CharField(write_only=True) 
-    
-    # Campos de salida
     articulo_nombre = serializers.SerializerMethodField(read_only=True)
+    
+    # NUEVO: Incluimos los tickets anidados para lectura fácil
+    tickets = TicketSalidaSerializer(many=True, read_only=True)
+    conteo_tickets = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = DetalleCaptura
@@ -59,15 +68,15 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
             'id', 
             'captura', 
             'articulo',
-            'producto_codigo', # Unificado: Entrada y Salida (vía to_representation)
+            'producto_codigo', 
             'cantidad_contada', 
             'articulo_nombre',
-            'existencia_sistema_al_momento'
+            'existencia_sistema_al_momento',
+            'tickets',         # <--- Lista de tickets
+            'conteo_tickets'   # <--- Cantidad total retirada
         ] 
-        read_only_fields = ['id', 'articulo', 'articulo_nombre', 'existencia_sistema_al_momento']
+        read_only_fields = ['id', 'articulo', 'articulo_nombre', 'existencia_sistema_al_momento', 'tickets', 'conteo_tickets']
 
-    # MAGIA AQUÍ: Sobreescribimos la representación de salida
-    # para inyectar el valor de la clave en 'producto_codigo'
     def to_representation(self, instance):
         ret = super().to_representation(instance)
         if instance.articulo:
@@ -95,7 +104,6 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
         captura = validated_data.get('captura')
         cantidad_nueva = validated_data.get('cantidad_contada')
 
-        # Buscamos por ID de articulo dentro de la captura para evitar duplicados
         detalle_existente = DetalleCaptura.objects.filter(captura=captura, articulo=articulo).first()
 
         if detalle_existente:
@@ -116,6 +124,11 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
         if obj.articulo:
             return obj.articulo.nombre
         return "Producto Desconocido"
+
+    def get_conteo_tickets(self, obj):
+        # Retorna la suma total de piezas que se han hecho ticket para este renglón
+        total = sum(t.cantidad for t in obj.tickets.all())
+        return total
 
 
 class CapturaSerializer(serializers.ModelSerializer):

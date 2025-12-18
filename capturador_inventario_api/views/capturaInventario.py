@@ -3,15 +3,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-# Asegúrate de importar Almacen y sus serializadores
-from ..models import Captura, DetalleCaptura, Almacen, Articulo, ClaveAuxiliar
-from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer, ArticuloSerializer
+# Importamos InventarioArticulo
+from ..models import Captura, DetalleCaptura, Almacen, Articulo, ClaveAuxiliar, TicketSalida, InventarioArticulo
+from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer, TicketSalidaSerializer
 
 class AlmacenOptionsView(APIView):
-    """
-    Endpoint: GET /api/inventario/almacenes/
-    Lista los almacenes activos para llenar selects.
-    """
     def get(self, request, *args, **kwargs):
         try:
             almacenes = Almacen.objects.filter(activo_web=True).order_by('nombre')
@@ -22,41 +18,47 @@ class AlmacenOptionsView(APIView):
 
 class ArticuloBusquedaView(APIView):
     """
-    Endpoint: GET /api/inventario/buscar-articulo/?codigo=XYZ
-    NUEVO: Busca un artículo por código principal o auxiliar y retorna su data
-    (ID, Nombre, Clave) sin crear registros.
+    Endpoint: GET /api/inventario/buscar-articulo/?codigo=XYZ&almacen=ID
+    Retorna datos del artículo incluyendo existencia en el almacén solicitado.
     """
     def get(self, request, *args, **kwargs):
         codigo = request.query_params.get('codigo', '').strip()
+        almacen_id = request.query_params.get('almacen', None)
+
         if not codigo:
             return Response({"error": "Código no proporcionado"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 1. Buscar en Articulos (Clave Principal)
+        # 1. Buscar Artículo
         articulo = Articulo.objects.filter(clave__iexact=codigo).first()
-
-        # 2. Buscar en Claves Auxiliares si no se encontró
         if not articulo:
             aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
             if aux:
                 articulo = aux.articulo
         
         if articulo:
-            # Usamos el serializador existente o construimos una respuesta simple
+            existencia = 0
+            # 2. Si hay almacén, buscar existencia
+            if almacen_id:
+                inv = InventarioArticulo.objects.filter(articulo=articulo, almacen_id=almacen_id).first()
+                if inv:
+                    existencia = inv.existencia
+
             data = {
                 "id": articulo.id,
                 "clave": articulo.clave,
                 "nombre": articulo.nombre,
-                "existencia_teorica": 0 # Placeholder si quisieras mostrar existencia actual
+                "existencia_teorica": existencia # <-- Enviamos el dato
             }
             return Response(data, status=status.HTTP_200_OK)
         else:
             return Response({"error": "Producto no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
 class CapturaInventarioView(APIView):
-    """
-    Endpoint: POST /api/inventario/captura/
-    Crea una captura NUEVA con sus detalles iniciales.
-    """
+    def get(self, request, *args, **kwargs):
+        capturas = Captura.objects.filter(capturador=request.user).order_by('-fecha_captura')
+        serializer = CapturaSerializer(capturas, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     def post(self, request, *args, **kwargs):
         serializer = CapturaSerializer(data=request.data)
         if serializer.is_valid():
@@ -77,20 +79,28 @@ class CapturaInventarioView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CapturaDetailView(APIView):
-    """
-    Endpoint: GET /api/inventario/captura/<int:pk>/
-    Recupera una captura completa (Cabecera + Detalles) por su ID.
-    """
     def get(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
         serializer = CapturaSerializer(captura)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def delete(self, request, pk, *args, **kwargs):
+        captura = get_object_or_404(Captura, pk=pk)
+        try:
+            captura.delete()
+            return Response({"mensaje": "Captura eliminada correctamente"}, status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def patch(self, request, pk, *args, **kwargs):
+        captura = get_object_or_404(Captura, pk=pk)
+        serializer = CapturaSerializer(captura, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 class SincronizarCapturaView(APIView):
-    """
-    Endpoint: POST /api/inventario/captura/{pk}/sincronizar/
-    Recibe un ARRAY de detalles para insertar masivamente.
-    """
     def post(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
 
@@ -122,10 +132,6 @@ class SincronizarCapturaView(APIView):
 
 
 class DetalleIndividualView(APIView):
-    """
-    Endpoint: POST /api/inventario/detalle/
-    Para el modo Online: agrega un solo registro.
-    """
     def post(self, request, *args, **kwargs):
         data = request.data.copy()
         if 'captura_id' in data:
@@ -148,4 +154,37 @@ class DetalleIndividualView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class TicketCreateView(APIView):
+    def post(self, request, *args, **kwargs):
+        serializer = TicketSalidaSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            detalle_id = request.data.get('detalle')
+            cantidad_ticket = serializer.validated_data.get('cantidad')
+            
+            detalle = get_object_or_404(DetalleCaptura, pk=detalle_id)
+            
+            try:
+                with transaction.atomic():
+                    if cantidad_ticket > detalle.cantidad_contada:
+                        return Response({
+                            "error": f"No se pueden retirar {cantidad_ticket} piezas. Solo hay {detalle.cantidad_contada} capturadas."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    detalle.cantidad_contada -= cantidad_ticket
+                    detalle.save()
+
+                    ticket = serializer.save()
+
+                return Response({
+                    "mensaje": "Ticket generado y cantidad descontada.",
+                    "ticket_id": ticket.id,
+                    "nueva_cantidad_detalle": detalle.cantidad_contada
+                }, status=status.HTTP_201_CREATED)
+
+            except Exception as e:
+                return Response({"error": "Error al procesar ticket", "detalle": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

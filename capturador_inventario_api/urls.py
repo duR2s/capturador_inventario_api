@@ -8,8 +8,8 @@ from .views.bootstrap import VersionView
 from .views.capturaInventario import CapturaInventarioView, SincronizarCapturaView, DetalleIndividualView
 from .views.empleado import EmpleadoView, EmpleadoAll
 from .views.auth import CustomAuthToken, Logout
-# Importamos la nueva vista de Detalle y Busqueda
-from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView, ArticuloBusquedaView # <--- IMPORTAR ArticuloBusquedaView
+# Importamos la nueva vista de Detalle y Busqueda Y EL TICKET
+from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView, ArticuloBusquedaView, TicketCreateView
 
 # Importamos las NUEVAS vistas de administrador
 from .views.administrador import AdminView, AdminAll 
@@ -49,6 +49,9 @@ urlpatterns = [
     # 3. CRUD Detalle Individual (Online Mode)
     path("api/inventario/detalle/", DetalleIndividualView.as_view(), name="api-detalle-create"),
     path("api/inventario/detalle/<int:pk>/", DetalleIndividualView.as_view(), name="api-detalle-manage"),
+
+    # 4. GENERACIÓN DE TICKETS (NUEVO)
+    path("api/inventario/ticket/", TicketCreateView.as_view(), name="api-ticket-create"),
 
     # --- RUTAS DE AUTENTICACIÓN ---
     path("api/login/", CustomAuthToken.as_view(), name="api-login"),

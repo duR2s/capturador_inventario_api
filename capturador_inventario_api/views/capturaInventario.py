@@ -6,11 +6,15 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from rest_framework.permissions import IsAuthenticated, AllowAny # Importar permisos
+
 # Importamos InventarioArticulo
 from ..models import Captura, DetalleCaptura, Almacen, Articulo, ClaveAuxiliar, TicketSalida, InventarioArticulo
 from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer, TicketSalidaSerializer
 
 class AlmacenOptionsView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     def get(self, request, *args, **kwargs):
         try:
             almacenes = Almacen.objects.filter(activo_web=True).order_by('nombre')
@@ -20,6 +24,8 @@ class AlmacenOptionsView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ArticuloBusquedaView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     """
     Endpoint: GET /api/inventario/buscar-articulo/?codigo=XYZ&almacen=ID
     Retorna datos del artículo incluyendo existencia en el almacén solicitado.
@@ -57,6 +63,8 @@ class ArticuloBusquedaView(APIView):
             return Response({"error": "Producto no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
 class CapturaInventarioView(APIView):
+    permission_classes = [IsAuthenticated] # CRÍTICO: Esto evita el error de AnonymousUser
+
     def get(self, request, *args, **kwargs):
         # LÓGICA DE PERMISOS ADMIN
         es_admin = False
@@ -66,6 +74,7 @@ class CapturaInventarioView(APIView):
         if es_admin:
             capturas = Captura.objects.all().order_by('-fecha_captura')
         else:
+            # Aquí fallaba antes porque request.user era AnonymousUser
             capturas = Captura.objects.filter(capturador=request.user).order_by('-fecha_captura')
             
         serializer = CapturaSerializer(capturas, many=True)
@@ -91,6 +100,8 @@ class CapturaInventarioView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CapturaDetailView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     def get(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
         
@@ -139,6 +150,8 @@ class CapturaDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class SincronizarCapturaView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     def post(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
 
@@ -170,6 +183,8 @@ class SincronizarCapturaView(APIView):
 
 
 class DetalleIndividualView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     def post(self, request, *args, **kwargs):
         data = request.data.copy()
         if 'captura_id' in data:
@@ -195,6 +210,8 @@ class DetalleIndividualView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class TicketCreateView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     def post(self, request, *args, **kwargs):
         serializer = TicketSalidaSerializer(data=request.data)
         
@@ -229,6 +246,8 @@ class TicketCreateView(APIView):
     
 
 class ExportarCapturaExcelView(APIView):
+    permission_classes = [IsAuthenticated] # Proteger
+
     """
     Genera un Excel en memoria de una captura específica.
     """

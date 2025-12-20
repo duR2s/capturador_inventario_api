@@ -55,10 +55,14 @@ class TicketSalidaSerializer(serializers.ModelSerializer):
 # --- 3. Serializadores de Captura y Detalle ---
 
 class DetalleCapturaSerializer(serializers.ModelSerializer):
-    producto_codigo = serializers.CharField(write_only=True) 
+    # Campo opcional para buscar por texto (legacy/backup)
+    producto_codigo = serializers.CharField(write_only=True, required=False, allow_blank=True) 
+    
+    # NUEVO: Campo para recibir el ID directo del artículo (Prioridad Alta)
+    articulo_id = serializers.IntegerField(write_only=True, required=False)
+
     articulo_nombre = serializers.SerializerMethodField(read_only=True)
     
-    # NUEVO: Incluimos los tickets anidados para lectura fácil
     tickets = TicketSalidaSerializer(many=True, read_only=True)
     conteo_tickets = serializers.SerializerMethodField(read_only=True)
 
@@ -67,14 +71,16 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
         fields = [
             'id', 
             'captura', 
-            'articulo',
+            'articulo',       # Este es el FK (read_only por defecto en ModelSerializer si no se especifica input)
+            'articulo_id',    # Input explícito para ID
             'producto_codigo', 
             'cantidad_contada', 
             'articulo_nombre',
             'existencia_sistema_al_momento',
-            'tickets',         # <--- Lista de tickets
-            'conteo_tickets'   # <--- Cantidad total retirada
+            'tickets',         
+            'conteo_tickets'   
         ] 
+        # 'articulo' se envía en el response automáticamente con el ID del objeto relacionado
         read_only_fields = ['id', 'articulo', 'articulo_nombre', 'existencia_sistema_al_momento', 'tickets', 'conteo_tickets']
 
     def to_representation(self, instance):
@@ -86,24 +92,35 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
         return ret
 
     def create(self, validated_data):
-        codigo_raw = validated_data.pop('producto_codigo', '')
-        codigo = str(codigo_raw).strip()
-
-        articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+        # 1. Intentar obtener por ID directo (Más seguro)
+        id_art = validated_data.pop('articulo_id', None)
         
-        if not articulo:
-            aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
-            if aux:
-                articulo = aux.articulo
+        # 2. Obtener código de barras como fallback
+        codigo_raw = validated_data.pop('producto_codigo', '')
+        
+        articulo = None
+        
+        if id_art:
+            articulo = Articulo.objects.filter(pk=id_art).first()
+        
+        # Si no se envió ID o no existe, buscamos por clave
+        if not articulo and codigo_raw:
+            codigo = str(codigo_raw).strip()
+            articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+            if not articulo:
+                aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
+                if aux:
+                    articulo = aux.articulo
         
         if not articulo:
             raise serializers.ValidationError({
-                "producto_codigo": f"No se encontró el artículo '{codigo}' en el catálogo."
+                "producto_codigo": f"No se encontró el artículo (ID: {id_art} o Clave: {codigo_raw})."
             })
 
         captura = validated_data.get('captura')
         cantidad_nueva = validated_data.get('cantidad_contada')
 
+        # Buscar si ya existe este artículo en esta captura para sumar
         detalle_existente = DetalleCaptura.objects.filter(captura=captura, articulo=articulo).first()
 
         if detalle_existente:
@@ -126,7 +143,6 @@ class DetalleCapturaSerializer(serializers.ModelSerializer):
         return "Producto Desconocido"
 
     def get_conteo_tickets(self, obj):
-        # Retorna la suma total de piezas que se han hecho ticket para este renglón
         total = sum(t.cantidad for t in obj.tickets.all())
         return total
 
@@ -162,15 +178,25 @@ class CapturaSerializer(serializers.ModelSerializer):
         
         objs_detalles = []
         for detalle in detalles_data:
+            # Soportar tanto articulo_id como producto_codigo en la creación masiva/offline
+            id_art = detalle.get('articulo_id', None)
             codigo_raw = detalle.get('producto_codigo', '')
-            codigo = str(codigo_raw).strip()
             
-            articulo = Articulo.objects.filter(clave__iexact=codigo).first()
-            if not articulo:
-                 aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
-                 if aux: articulo = aux.articulo
+            articulo = None
+            if id_art:
+                 articulo = Articulo.objects.filter(pk=id_art).first()
+            
+            if not articulo and codigo_raw:
+                codigo = str(codigo_raw).strip()
+                articulo = Articulo.objects.filter(clave__iexact=codigo).first()
+                if not articulo:
+                     aux = ClaveAuxiliar.objects.filter(clave__iexact=codigo).select_related('articulo').first()
+                     if aux: articulo = aux.articulo
             
             if articulo:
+                # Verificar duplicados dentro del mismo batch para sumarlos
+                # (Lógica simplificada: se crea objeto, DB o lógica externa maneja unique_together si se guarda uno a uno, 
+                # pero bulk_create no chequea unique. Para robustez offline, asumimos que el array viene limpio o aceptamos filas multiples)
                 objs_detalles.append(DetalleCaptura(
                     captura=captura, 
                     articulo=articulo, 

@@ -18,21 +18,21 @@ if ENVIRONMENT == 'production':
     
     # --- CONFIGURACIÓN DE PRODUCCIÓN ---
     DEBUG = False
-    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.1.50", "*"]
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.0.9", "*"]
     
     # En prod con Nginx y ruta relativa, CORS es menos estricto o innecesario,
     # pero lo dejamos configurado para aceptar a Nginx en puerto 81.
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:81/api", 
         "http://127.0.0.1:81/api",
-        "http://192.168.1.50:81/api"
+        "http://192.168.0.9:81/api"
     ]
     
     # CSRF para producción (aceptar origen de Nginx)
     CSRF_TRUSTED_ORIGINS = [
         "http://localhost:81/api", 
         "http://127.0.0.1:81/api",
-        "http://192.168.1.50:81/api"
+        "http://192.168.0.9:81/api"
     ]
 
 else:
@@ -49,13 +49,13 @@ else:
         "http://localhost:4200",
         "http://127.0.0.1:4200",
         # Agrega la IP de tu celular si pruebas remoto en dev
-        "http://192.168.1.50:4200" 
+        "http://192.168.0.9:4200" 
     ]
     
     CSRF_TRUSTED_ORIGINS = [
         "http://localhost:4200",
         "http://127.0.0.1:4200",
-        "http://192.168.1.50:4200" 
+        "http://192.168.0.9:4200" 
     ]
 
 # Permitir credenciales en ambos entornos (necesario para cookies/tokens a veces)

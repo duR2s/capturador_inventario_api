@@ -9,7 +9,7 @@ from .views.capturaInventario import CapturaInventarioView, SincronizarCapturaVi
 from .views.empleado import EmpleadoView, EmpleadoAll
 from .views.auth import CustomAuthToken, Logout
 # Importamos la nueva vista de Detalle y Busqueda Y EL TICKET
-from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView, ArticuloBusquedaView, TicketCreateView
+from .views.capturaInventario import AlmacenOptionsView, CapturaDetailView, ArticuloBusquedaView, TicketCreateView, ExportarCapturaExcelView
 
 # Importamos las NUEVAS vistas de administrador
 from .views.administrador import AdminView, AdminAll 
@@ -52,6 +52,9 @@ urlpatterns = [
 
     # 4. GENERACIÓN DE TICKETS (NUEVO)
     path("api/inventario/ticket/", TicketCreateView.as_view(), name="api-ticket-create"),
+
+    # 5. EXPORTAR EXCEL (NUEVO)
+    path("api/inventario/captura/<int:pk>/excel/", ExportarCapturaExcelView.as_view(), name="api-captura-excel"),
 
     # --- RUTAS DE AUTENTICACIÓN ---
     path("api/login/", CustomAuthToken.as_view(), name="api-login"),

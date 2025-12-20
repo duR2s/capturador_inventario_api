@@ -1,3 +1,6 @@
+import openpyxl
+from io import BytesIO
+from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -47,7 +50,7 @@ class ArticuloBusquedaView(APIView):
                 "id": articulo.id,
                 "clave": articulo.clave,
                 "nombre": articulo.nombre,
-                "existencia_teorica": existencia # <-- Enviamos el dato
+                "existencia_teorica": existencia
             }
             return Response(data, status=status.HTTP_200_OK)
         else:
@@ -55,7 +58,16 @@ class ArticuloBusquedaView(APIView):
 
 class CapturaInventarioView(APIView):
     def get(self, request, *args, **kwargs):
-        capturas = Captura.objects.filter(capturador=request.user).order_by('-fecha_captura')
+        # LÓGICA DE PERMISOS ADMIN
+        es_admin = False
+        if hasattr(request.user, 'empleado') and request.user.empleado.puesto == 'ADMIN':
+            es_admin = True
+        
+        if es_admin:
+            capturas = Captura.objects.all().order_by('-fecha_captura')
+        else:
+            capturas = Captura.objects.filter(capturador=request.user).order_by('-fecha_captura')
+            
         serializer = CapturaSerializer(capturas, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -70,7 +82,7 @@ class CapturaInventarioView(APIView):
                     "folio": captura.folio,
                     "id": captura.id,
                     "fecha_registrada": captura.fecha_captura
-                }, status=status.HTTP_201_CREATED)
+                }, status=status.HTTP_21_CREATED)
             except Exception as e:
                 return Response({
                     "error": "Error interno al procesar la captura.",
@@ -81,11 +93,21 @@ class CapturaInventarioView(APIView):
 class CapturaDetailView(APIView):
     def get(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
+        
+        es_admin = hasattr(request.user, 'empleado') and request.user.empleado.puesto == 'ADMIN'
+        if not es_admin and captura.capturador != request.user:
+             return Response({"error": "No tienes permiso para ver esta captura."}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = CapturaSerializer(captura)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
+        
+        es_admin = hasattr(request.user, 'empleado') and request.user.empleado.puesto == 'ADMIN'
+        if not es_admin and captura.capturador != request.user:
+             return Response({"error": "No tienes permiso para eliminar esta captura."}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             captura.delete()
             return Response({"mensaje": "Captura eliminada correctamente"}, status=status.HTTP_204_NO_CONTENT)
@@ -94,6 +116,22 @@ class CapturaDetailView(APIView):
 
     def patch(self, request, pk, *args, **kwargs):
         captura = get_object_or_404(Captura, pk=pk)
+        
+        es_admin = hasattr(request.user, 'empleado') and request.user.empleado.puesto == 'ADMIN'
+        
+        # 1. Permiso básico de edición
+        if not es_admin and captura.capturador != request.user:
+             return Response({"error": "No tienes permiso para editar esta captura."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. VALIDACIÓN EXTRA: Si intenta cambiar el ESTADO y NO es admin -> Prohibido
+        nuevo_estado = request.data.get('estado')
+        if nuevo_estado and nuevo_estado != captura.estado:
+            if not es_admin:
+                return Response(
+                    {"error": "Solo los administradores pueden cambiar el estado de la captura."}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         serializer = CapturaSerializer(captura, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -188,3 +226,45 @@ class TicketCreateView(APIView):
                 return Response({"error": "Error al procesar ticket", "detalle": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+class ExportarCapturaExcelView(APIView):
+    """
+    Genera un Excel en memoria de una captura específica.
+    """
+    def get(self, request, pk, *args, **kwargs):
+        captura = get_object_or_404(Captura, pk=pk)
+        
+        es_admin = hasattr(request.user, 'empleado') and request.user.empleado.puesto == 'ADMIN'
+        if not es_admin and captura.capturador != request.user:
+             return Response({"error": "No tienes permiso para descargar esta captura."}, status=status.HTTP_403_FORBIDDEN)
+
+        detalles = captura.detalles.all().select_related('articulo').order_by('id')
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"Captura {captura.folio}"
+
+        row_num = 2
+        
+        for detalle in detalles:
+            clave = detalle.articulo.clave if detalle.articulo else "SIN_CLAVE"
+            cantidad = detalle.cantidad_contada
+
+            ws.cell(row=row_num, column=1, value=clave)
+            ws.cell(row=row_num, column=2, value=cantidad)
+            
+            row_num += 1
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        filename = f"Captura_{captura.folio}.xlsx"
+        response = HttpResponse(
+            buffer,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        return response

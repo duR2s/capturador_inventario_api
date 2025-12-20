@@ -65,7 +65,7 @@ class AdminView(generics.CreateAPIView):
     
     @transaction.atomic
     def post(self, request, *args, **kwargs):
-        """Crear nuevo administrador con cálculo automático de edad"""
+        """Crear nuevo administrador con rol estricto 'ADMIN'"""
         data = request.data.copy()
         
         if 'email' in data and 'username' not in data:
@@ -74,13 +74,14 @@ class AdminView(generics.CreateAPIView):
         user_serializer = UserSerializer(data=data)
         
         if user_serializer.is_valid():
-            role = data.get('rol', 'ADMIN')
+            # CORRECCIÓN: Forzamos el rol a 'ADMIN' mayúscula.
+            # Ignoramos lo que venga en data.get('rol') para evitar alias incorrectos.
+            role = 'ADMIN'
             
             # --- LÓGICA DE EDAD AUTOMÁTICA ---
             fecha_nac = data.get("fecha_nacimiento")
             edad_calculada = calcular_edad(fecha_nac)
             
-            # Opcional: Validar si la edad es legal (ej. > 18)
             if edad_calculada is not None and edad_calculada < 18:
                 return Response({"error": "El administrador debe ser mayor de edad"}, 400)
             # ---------------------------------
@@ -100,6 +101,7 @@ class AdminView(generics.CreateAPIView):
             user.set_password(data.get('password'))
             user.save()
 
+            # Asegurar que el grupo 'ADMIN' exista y asignar usuario
             group, created = Group.objects.get_or_create(name=role)
             group.user_set.add(user)
 
@@ -111,8 +113,8 @@ class AdminView(generics.CreateAPIView):
                 telefono=data.get("telefono"),
                 rfc=data.get("rfc"),
                 fecha_nacimiento=fecha_nac,
-                edad=edad_calculada, # Se guarda el valor calculado
-                puesto='ADMIN'
+                edad=edad_calculada, 
+                puesto=role # Guardamos 'ADMIN' explícitamente
             )
             
             return Response({"admin_created_id": empleado.id}, 201)
@@ -121,7 +123,7 @@ class AdminView(generics.CreateAPIView):
 
     @transaction.atomic
     def put(self, request, *args, **kwargs):
-        """Actualizar administrador existente recalculando edad si cambia fecha"""
+        """Actualizar administrador existente"""
         admin_id = request.data.get("id")
         if not admin_id:
              return Response({"error": "ID es requerido para actualizar"}, status=400)
@@ -132,7 +134,6 @@ class AdminView(generics.CreateAPIView):
         nueva_fecha = request.data.get("fecha_nacimiento")
         if nueva_fecha:
             empleado.fecha_nacimiento = nueva_fecha
-            # Si cambia la fecha, recalculamos la edad
             nueva_edad = calcular_edad(nueva_fecha)
             if nueva_edad:
                 empleado.edad = nueva_edad
@@ -144,10 +145,8 @@ class AdminView(generics.CreateAPIView):
         empleado.telefono = request.data.get("telefono", empleado.telefono)
         empleado.rfc = request.data.get("rfc", empleado.rfc)
         
-        # Guardamos cambios del empleado
         empleado.save()
         
-        # Actualizamos usuario
         user = empleado.user
         user.first_name = request.data.get("first_name", user.first_name)
         user.last_name = request.data.get("last_name", user.last_name)

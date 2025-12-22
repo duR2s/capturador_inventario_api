@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.utils import timezone
+import datetime # Importante para obtener el año actual
 from .models import *
 
 # --- 1. Serializadores de Usuario y Empleado ---
@@ -152,6 +153,10 @@ class CapturaSerializer(serializers.ModelSerializer):
     
     capturador_nombre = serializers.CharField(source='capturador.username', read_only=True)
     almacen_nombre = serializers.CharField(source='almacen.nombre', read_only=True)
+    
+    # Hacemos que el folio sea read_only para que no importe lo que mande el front
+    folio = serializers.CharField(required=False, read_only=True) 
+
     modo_offline = serializers.BooleanField(write_only=True, required=False, default=False)
     fecha_reportada = serializers.DateTimeField(write_only=True, required=False)
 
@@ -163,12 +168,36 @@ class CapturaSerializer(serializers.ModelSerializer):
             'fecha_captura', 'estado', 'detalles',
             'modo_offline', 'fecha_reportada'
         ]
-        read_only_fields = ['id', 'capturador_nombre', 'almacen_nombre']
+        read_only_fields = ['id', 'capturador_nombre', 'almacen_nombre', 'folio']
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles', [])
         modo_offline = validated_data.pop('modo_offline', False)
         fecha_reportada = validated_data.pop('fecha_reportada', None)
+
+        # --- LÓGICA DE GENERACIÓN DE FOLIO ---
+        # 1. Obtenemos el año actual
+        anio = datetime.date.today().year
+        prefix = f"INV-{anio}"
+        
+        # 2. Buscamos el último folio de este año para incrementar
+        # Asumimos formato INV-YYYY-XXXX (ej INV-2025-0001)
+        ultimo = Captura.objects.filter(folio__startswith=prefix).order_by('-id').first()
+        
+        if ultimo:
+            try:
+                # Extraemos la parte numérica final (despues del último guión)
+                secuencia = int(ultimo.folio.split('-')[-1]) + 1
+            except:
+                secuencia = 1
+        else:
+            secuencia = 1
+
+        # 3. Formateamos a 4 digitos (rellenando con ceros)
+        nuevo_folio = f"{prefix}-{str(secuencia).zfill(4)}"
+        
+        validated_data['folio'] = nuevo_folio
+        # -------------------------------------
 
         captura = Captura.objects.create(**validated_data)
         
@@ -178,7 +207,6 @@ class CapturaSerializer(serializers.ModelSerializer):
         
         objs_detalles = []
         for detalle in detalles_data:
-            # Soportar tanto articulo_id como producto_codigo en la creación masiva/offline
             id_art = detalle.get('articulo_id', None)
             codigo_raw = detalle.get('producto_codigo', '')
             
@@ -194,9 +222,6 @@ class CapturaSerializer(serializers.ModelSerializer):
                      if aux: articulo = aux.articulo
             
             if articulo:
-                # Verificar duplicados dentro del mismo batch para sumarlos
-                # (Lógica simplificada: se crea objeto, DB o lógica externa maneja unique_together si se guarda uno a uno, 
-                # pero bulk_create no chequea unique. Para robustez offline, asumimos que el array viene limpio o aceptamos filas multiples)
                 objs_detalles.append(DetalleCaptura(
                     captura=captura, 
                     articulo=articulo, 

@@ -12,6 +12,22 @@ from rest_framework.permissions import IsAuthenticated, AllowAny # Importar perm
 from ..models import Captura, DetalleCaptura, Almacen, Articulo, ClaveAuxiliar, TicketSalida, InventarioArticulo
 from ..serializers import CapturaSerializer, DetalleCapturaSerializer, AlmacenSerializer, TicketSalidaSerializer
 
+# --- NUEVA VISTA: Opciones de Estado ---
+class EstadoCapturaOptionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        """
+        Devuelve la lista de estados definidos en el modelo Captura.
+        Formato: [{'value': 'BORRADOR', 'label': 'Borrador'}, ...]
+        """
+        try:
+            # Obtenemos los choices directamente del modelo
+            estados = [{'value': estado[0], 'label': estado[1]} for estado in Captura.ESTADOS]
+            return Response(estados, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class AlmacenOptionsView(APIView):
     permission_classes = [IsAuthenticated] # Proteger
 
@@ -91,7 +107,7 @@ class CapturaInventarioView(APIView):
                     "folio": captura.folio,
                     "id": captura.id,
                     "fecha_registrada": captura.fecha_captura
-                }, status=status.HTTP_21_CREATED)
+                }, status=status.HTTP_201_CREATED)
             except Exception as e:
                 return Response({
                     "error": "Error interno al procesar la captura.",

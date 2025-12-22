@@ -1,8 +1,9 @@
-from django.db.models import *
+from django.db.models import Q
 from django.db import transaction
 from django.contrib.auth.models import User, Group
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, generics, status
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from datetime import date, datetime
 
@@ -10,6 +11,7 @@ from datetime import date, datetime
 from ..models import Empleado
 from ..serializers import EmpleadoSerializer, UserSerializer
 
+# Reutilizamos la función de edad que tenías duplicada
 def calcular_edad(fecha_nacimiento_str):
     if not fecha_nacimiento_str:
         return None
@@ -24,156 +26,164 @@ def calcular_edad(fecha_nacimiento_str):
     except ValueError:
         return None
 
-class EmpleadoAll(generics.CreateAPIView):
-    permission_classes = (permissions.IsAuthenticated,)
-    
-    def get(self, request, *args, **kwargs):
-        empleados = Empleado.objects.exclude(puesto='ADMIN').filter(user__is_active=True).order_by("id")
-        lista = EmpleadoSerializer(empleados, many=True).data
-        return Response(lista, 200)
+class UsuarioGestionView(APIView):
+    """
+    Vista Unificada para gestionar Empleados y Administradores.
+    Soporta filtros por rol y búsqueda general.
+    """
+    permission_classes = [permissions.IsAuthenticated]
 
-class EmpleadoView(generics.CreateAPIView):
-    
-    def get_permissions(self):
-        if self.request.method == 'POST':
-            return [permissions.AllowAny()] 
-        return [permissions.IsAuthenticated()]
-    
+    # --- GET: Listar o Ver Uno ---
     def get(self, request, *args, **kwargs):
-        empleado_id = request.GET.get("id")
-        if not empleado_id:
-            return Response({"error": "ID es requerido"}, status=400)
+        usuario_id = request.query_params.get("id")
+        rol_filtro = request.query_params.get("rol") # Ej: 'ADMIN', 'CAPTURADOR'
+        busqueda = request.query_params.get("q") # Búsqueda por nombre/clave
+
+        # 1. Si piden un ID específico
+        if usuario_id:
+            empleado = get_object_or_404(Empleado, id=usuario_id)
+            return Response(EmpleadoSerializer(empleado).data, status=200)
+
+        # 2. Construcción de Queryset Base
+        queryset = Empleado.objects.filter(user__is_active=True).order_by("id")
+
+        # 3. Filtros Dinámicos
+        if rol_filtro:
+            queryset = queryset.filter(puesto=rol_filtro)
         
-        empleado = get_object_or_404(Empleado.objects.exclude(puesto='ADMIN'), id=empleado_id)
-        data = EmpleadoSerializer(empleado, many=False).data
-        return Response(data, 200)
-    
+        if busqueda:
+            queryset = queryset.filter(
+                Q(user__first_name__icontains=busqueda) | 
+                Q(user__last_name__icontains=busqueda) |
+                Q(user__email__icontains=busqueda) |
+                Q(clave_interna__icontains=busqueda)
+            )
+
+        data = EmpleadoSerializer(queryset, many=True).data
+        return Response(data, status=200)
+
+    # --- POST: Crear Nuevo (Cualquier Rol) ---
     @transaction.atomic
     def post(self, request, *args, **kwargs):
-        """Crear nuevo empleado con puesto controlado"""
         data = request.data.copy()
         
+        # Validaciones comunes
         if 'email' in data and 'username' not in data:
             data['username'] = data['email']
+        
+        # Validación de Puesto (Seguridad)
+        puesto = data.get('puesto', 'CAPTURADOR')
+        if puesto not in ['ADMIN', 'CAPTURADOR', 'OTRO']:
+            return Response({"error": f"El puesto '{puesto}' no es válido."}, status=400)
+
+        # Validación de Edad
+        fecha_nac = data.get("fecha_nacimiento")
+        edad = calcular_edad(fecha_nac)
+        
+        if puesto == 'ADMIN' and (edad is None or edad < 18):
+            return Response({"error": "Un Administrador debe ser mayor de edad obligatoriamente."}, status=400)
+
+        # Validación User/Email
+        if User.objects.filter(email=data.get('email')).exists():
+            return Response({"error": f"El email {data.get('email')} ya existe."}, status=400)
 
         user_serializer = UserSerializer(data=data)
-        
         if user_serializer.is_valid():
-            # CORRECCIÓN: Validación estricta del puesto
-            puesto_recibido = data.get('puesto', 'CAPTURADOR')
-            puestos_permitidos = ['CAPTURADOR', 'OTRO'] # ADMIN no permitido aquí
-            
-            if puesto_recibido not in puestos_permitidos:
-                # Si envían algo raro, lo forzamos a CAPTURADOR por seguridad
-                puesto = 'CAPTURADOR'
-            else:
-                puesto = puesto_recibido
-            
-            # --- LÓGICA DE EDAD AUTOMÁTICA ---
-            fecha_nac = data.get("fecha_nacimiento")
-            edad_calculada = calcular_edad(fecha_nac)
-            
-            first_name = data.get('first_name')
-            last_name = data.get('last_name')
-            email = data.get('email')
-            password = data.get('password')
-
-            if User.objects.filter(email=email).exists():
-                return Response({"message": f"El email {email} ya está registrado"}, 400)
-
-            # 1. Crear Usuario
+            # 1. Crear User
             user = User.objects.create(
-                username=email,
-                email=email,
-                first_name=first_name,
-                last_name=last_name,
+                username=data['email'],
+                email=data['email'],
+                first_name=data.get('first_name'),
+                last_name=data.get('last_name'),
                 is_active=True
             )
-            
-            user.set_password(password)
+            user.set_password(data.get('password'))
             user.save()
 
-            # 2. Asignar grupo (usando el puesto normalizado)
-            group, created = Group.objects.get_or_create(name=puesto)
+            # 2. Asignar Grupo/Rol
+            group, _ = Group.objects.get_or_create(name=puesto)
             group.user_set.add(user)
 
-            # 3. Crear Perfil Empleado
-            clave_interna = data.get("clave_interna")
-            
+            # 3. Crear Perfil Empleado (Unificado)
+            # Nota: Usamos 'clave_interna' para todo. Si el front manda 'clave_admin', lo mapeamos.
+            clave = data.get("clave_interna") or data.get("clave_admin")
+
             empleado = Empleado.objects.create(
                 user=user,
-                clave_interna=clave_interna,
+                clave_interna=clave,
                 telefono=data.get("telefono"),
                 rfc=data.get("rfc"),
                 fecha_nacimiento=fecha_nac,
-                edad=edad_calculada,
-                puesto=puesto # Guardamos el puesto normalizado
+                edad=edad,
+                puesto=puesto
             )
             
-            return Response({"empleado_created_id": empleado.id}, 201)
+            return Response({
+                "mensaje": f"{puesto} creado exitosamente",
+                "id": empleado.id
+            }, status=201)
+        
+        return Response(user_serializer.errors, status=400)
 
-        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+    # --- PUT: Actualizar (Cualquier Rol) ---
     @transaction.atomic
     def put(self, request, *args, **kwargs):
-        """Actualizar empleado existente"""
-        empleado_id = request.data.get("id")
-        if not empleado_id:
-             return Response({"error": "ID es requerido para actualizar"}, status=400)
-
-        empleado = get_object_or_404(Empleado.objects.exclude(puesto='ADMIN'), id=empleado_id)
-        
-        nuevo_puesto = request.data.get("puesto")
-        # Validación al actualizar también
-        if nuevo_puesto:
-            if nuevo_puesto == 'ADMIN':
-                return Response({"error": "No se puede promover a ADMIN desde esta vista"}, 403)
-            
-            if nuevo_puesto in ['CAPTURADOR', 'OTRO'] and empleado.puesto != nuevo_puesto:
-                antiguo_grupo = Group.objects.filter(name=empleado.puesto).first()
-                if antiguo_grupo:
-                    antiguo_grupo.user_set.remove(empleado.user)
-                
-                nuevo_grupo, _ = Group.objects.get_or_create(name=nuevo_puesto)
-                nuevo_grupo.user_set.add(empleado.user)
-                
-                empleado.puesto = nuevo_puesto
-
-        nueva_fecha = request.data.get("fecha_nacimiento")
-        if nueva_fecha:
-            empleado.fecha_nacimiento = nueva_fecha
-            nueva_edad = calcular_edad(nueva_fecha)
-            if nueva_edad is not None:
-                empleado.edad = nueva_edad
-
-        if request.data.get("clave_interna"):
-            empleado.clave_interna = request.data.get("clave_interna")
-            
-        empleado.telefono = request.data.get("telefono", empleado.telefono)
-        empleado.rfc = request.data.get("rfc", empleado.rfc)
-        
-        empleado.save()
-        
-        user = empleado.user
-        user.first_name = request.data.get("first_name", user.first_name)
-        user.last_name = request.data.get("last_name", user.last_name)
-        user.save()
-        
-        return Response({
-            "message": "Empleado actualizado correctamente", 
-            "empleado": EmpleadoSerializer(empleado).data
-        }, 200)
-
-    @transaction.atomic
-    def delete(self, request, *args, **kwargs):
-        """Eliminar empleado (Baja lógica)"""
-        empleado_id = request.GET.get("id")
-        if not empleado_id:
+        usuario_id = request.data.get("id")
+        if not usuario_id:
             return Response({"error": "ID es requerido"}, status=400)
-            
-        empleado = get_object_or_404(Empleado.objects.exclude(puesto='ADMIN'), id=empleado_id)
-        user = empleado.user
-        user.is_active = False
-        user.save()
+
+        empleado = get_object_or_404(Empleado, id=usuario_id)
+        data = request.data
+
+        # Actualizar datos directos
+        if "fecha_nacimiento" in data:
+            empleado.fecha_nacimiento = data["fecha_nacimiento"]
+            empleado.edad = calcular_edad(data["fecha_nacimiento"])
         
-        return Response({"message": "Empleado eliminado correctamente"}, 200)
+        clave = data.get("clave_interna") or data.get("clave_admin")
+        if clave:
+            empleado.clave_interna = clave
+
+        empleado.telefono = data.get("telefono", empleado.telefono)
+        empleado.rfc = data.get("rfc", empleado.rfc)
+
+        # Actualizar Puesto (Con lógica de cambio de grupo)
+        nuevo_puesto = data.get("puesto")
+        if nuevo_puesto and nuevo_puesto != empleado.puesto:
+            if nuevo_puesto not in ['ADMIN', 'CAPTURADOR', 'OTRO']:
+                 return Response({"error": "Puesto inválido"}, status=400)
+            
+            # Quitar del grupo anterior
+            antiguo_grupo = Group.objects.filter(name=empleado.puesto).first()
+            if antiguo_grupo: antiguo_grupo.user_set.remove(empleado.user)
+            
+            # Agregar al nuevo
+            nuevo_grupo, _ = Group.objects.get_or_create(name=nuevo_puesto)
+            nuevo_grupo.user_set.add(empleado.user)
+            
+            empleado.puesto = nuevo_puesto
+
+        empleado.save()
+
+        # Actualizar User
+        user = empleado.user
+        user.first_name = data.get("first_name", user.first_name)
+        user.last_name = data.get("last_name", user.last_name)
+        user.save()
+
+        return Response({"mensaje": "Actualizado correctamente"}, status=200)
+
+    # --- DELETE: Baja Lógica ---
+    def delete(self, request, *args, **kwargs):
+        usuario_id = request.query_params.get("id") # Soportar ?id=X
+        if not usuario_id:
+             usuario_id = request.data.get("id") # Soportar body {id: X}
+
+        if not usuario_id:
+            return Response({"error": "ID requerido"}, status=400)
+
+        empleado = get_object_or_404(Empleado, id=usuario_id)
+        empleado.user.is_active = False
+        empleado.user.save()
+
+        return Response({"mensaje": "Usuario desactivado correctamente"}, status=200)

@@ -49,13 +49,15 @@ else:
         "http://localhost:4200",
         "http://127.0.0.1:4200",
         # Agrega la IP de tu celular si pruebas remoto en dev
-        "http://192.168.0.9:4200" 
+        "http://192.168.0.9:4200",
+        "http://192.168.0.36:4200"
     ]
     
     CSRF_TRUSTED_ORIGINS = [
         "http://localhost:4200",
         "http://127.0.0.1:4200",
-        "http://192.168.0.9:4200" 
+        "http://192.168.0.9:4200",
+        "http://192.168.0.36:4200"
     ]
 
 # Permitir credenciales en ambos entornos (necesario para cookies/tokens a veces)

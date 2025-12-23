@@ -8,9 +8,8 @@ from .views.bootstrap import VersionView
 from .views.capturaInventario import CapturaInventarioView, SincronizarCapturaView, DetalleIndividualView
 from .views.auth import CustomAuthToken, Logout
 
-# --- CAMBIO: Importamos la Nueva Vista Unificada ---
-# Dado que pegaste el código de UsuarioGestionView en 'empleado.py', importamos de ahí.
-from .views.empleado import UsuarioGestionView
+# --- CAMBIO: Importamos ambas vistas ---
+from .views.empleado import UsuarioGestionView, UsuarioListView
 
 # Importamos vistas de inventario
 from .views.capturaInventario import (
@@ -22,31 +21,22 @@ from .views.capturaInventario import (
     EstadoCapturaOptionsView
 )
 
-# Importamos vistas de administrador (Legacy - Mantenlas si aun tienes el archivo administrador.py)
-from .views.administrador import AdminView, AdminAll 
+
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api-auth/", include("rest_framework.urls")),
     path("api/version/", VersionView.as_view(), name="api-version"),
     
-    # --- GESTIÓN DE USUARIOS UNIFICADA (NUEVO) ---
-    # Esta ruta atiende a tu UsuariosService:
-    # GET /api/usuarios/?rol=ADMIN
-    # GET /api/usuarios/?q=busqueda
-    # POST, PUT, DELETE /api/usuarios/
+    # --- GESTIÓN DE USUARIOS UNIFICADA ---
+    
+    # 1. URL PARA OBTENER TODOS (LISTADO)
+    # GET /api/lista-usuarios/?rol=ADMIN&q=pepe
+    path("api/lista-usuarios/", UsuarioListView.as_view(), name="api-usuarios-list"),
+
+    # 2. URL PARA GESTIÓN INDIVIDUAL (CRUD)
+    # GET (Uno), POST (Crear), PUT (Editar), DELETE (Borrar)
     path("api/usuarios/", UsuarioGestionView.as_view(), name="api-usuarios-gestion"),
-
-    # --- RUTAS LEGACY DE ADMINISTRADORES ---
-    # (Puedes mantenerlas si otros sistemas las usan, o borrarlas si 'UsuarioGestionView' ya maneja todo)
-    path("api/lista-admins/", AdminAll.as_view(), name="api-admin-list"),
-    path("api/admin/", AdminView.as_view(), name="api-admin-manage"),
-
-    # --- RUTAS DE EMPLEADOS (OBSOLETAS) ---
-    # Las comento porque al modificar empleado.py, las clases EmpleadoView/EmpleadoAll 
-    # probablemente ya no existan y darían error de importación.
-    # path("api/lista-empleados/", EmpleadoAll.as_view(), name="api-empleado-list"),
-    # path("api/empleado/", EmpleadoView.as_view(), name="api-empleado-manage"),
 
     # --- RUTAS DE INVENTARIO ---
     

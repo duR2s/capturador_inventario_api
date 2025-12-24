@@ -1,0 +1,29 @@
+# --- Framework & Core ---
+Django==5.0.2
+djangorestframework==3.16.1
+django-cors-headers==4.7.0
+django-filter>=24,<26
+django-compat==1.0.15
+
+# --- Base de Datos ---
+PyMySQL==1.1.2
+fdb==2.0.4              # <--- AGREGADO: Vital para Microsip/Firebird
+
+# --- Utilidades & Tareas ---
+requests==2.32.3
+python-dateutil==2.9.0.post0
+django-q2==1.8.0        # <--- AGREGADO: Para tareas en background
+openpyxl==3.1.5         # <--- AGREGADO: Para manejo de Excel
+
+# --- Autenticación & Seguridad ---
+django-rest-auth==0.9.5
+cryptography==42.0.8
+
+# --- Cloud & Almacenamiento ---
+google-cloud-storage==2.15.0
+
+# --- Imágenes ---
+Pillow==10.4.0
+
+# --- Servidor (Opcional, pero recomendado si lo usas para correr) ---
+waitress==3.0.2         # <--- AGREGADO: Servidor WSGI

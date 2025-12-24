@@ -11,6 +11,9 @@ from .views.auth import CustomAuthToken, Logout
 # --- CAMBIO: Importamos ambas vistas ---
 from .views.empleado import UsuarioGestionView, UsuarioListView
 
+# --- NUEVO: Importamos las vistas del Dashboard ---
+from .views.dashboard import DashboardKPIView, DashboardChartsView
+
 # Importamos vistas de inventario
 from .views.capturaInventario import (
     AlmacenOptionsView, 
@@ -28,6 +31,10 @@ urlpatterns = [
     path("api-auth/", include("rest_framework.urls")),
     path("api/version/", VersionView.as_view(), name="api-version"),
     
+    # --- DASHBOARD (NUEVOS ENDPOINTS) ---
+    path("api/dashboard/kpi/", DashboardKPIView.as_view(), name="api-dashboard-kpi"),
+    path("api/dashboard/charts/", DashboardChartsView.as_view(), name="api-dashboard-charts"),
+
     # --- GESTIÓN DE USUARIOS UNIFICADA ---
     
     # 1. URL PARA OBTENER TODOS (LISTADO)

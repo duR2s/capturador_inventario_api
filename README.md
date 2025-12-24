@@ -83,8 +83,7 @@ Sigue estos pasos para levantar el entorno de desarrollo localmente:
 
 ## ▶️ Ejecución
 
-### Opción A: Con Docker (Recomendado)
-Levanta la base de datos y el servidor con un solo comando:
+Levanta la base de datos y el servidor:
 
 ```bash
 #Con el venv activado 

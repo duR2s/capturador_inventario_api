@@ -13,8 +13,8 @@ Este backend sirve como núcleo para aplicaciones web y móviles, encargándose 
 3. [Instalación y Configuración](#-instalación-y-configuración)
 4. [Ejecución](#-ejecución)
 5. [Documentación de la API](#-documentación-de-la-api)
-6. [Testing](#-testing)
-7. [Estructura del Proyecto](#-estructura-del-proyecto)
+6. [Estructura del Proyecto](#-estructura-del-proyecto)
+7. [Flujo de Trabajo](#-flujo-de-trabajo)
 
 ---
 
@@ -64,7 +64,7 @@ Sigue estos pasos para levantar el entorno de desarrollo localmente:
     git clone https://github.com/duR2s/capturador_inventario_api.git
     cd nombre-del-repo
     ```
-    
+
 2.  **Configurar Variables de Entorno:**
     Crea una carpeta para el enviroment en la raíz root/venv.
 
@@ -93,7 +93,15 @@ Levanta la base de datos y el servidor:
     ```
 ---
 
-## 🌳 Estructura
+
+
+## 🔄 Documentación de la API
+
+#Pendiente...
+
+---
+
+## 🌳 Estructura del Proyecto
 
 capturador_inventario_api/
 ├── capturador_inventario_api/      # Núcleo del Backend
